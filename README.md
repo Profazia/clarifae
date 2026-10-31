@@ -89,6 +89,11 @@ verification steps.
 
 ## How it works
 
+**Registration, attachment and PCM processing are separate gates.** A registered
+or attached effect does not prove that a particular vendor path sends it audio.
+See [legacy ABI/streaming tests and limitations](docs/LEGACY_EFFECT_TESTING.md);
+these portable fixes are not a universal Samsung capture fix.
+
 ```
  INPUT   mic app ─▶ AudioRecord ─▶ capture chain  ─┐  <preprocess> → clarifae_ns
                                                     ├─▶ libclarifae.so (effect.c)
@@ -102,7 +107,7 @@ verification steps.
 ```
 
 Configuration flows: **WebUI → `clarifae-ctl` → `config.conf` → `persist.clarifae.*` →
-effect**. The effect detects a property change (via the property serial) and reloads
+effect**. Each instance detects property identity/serial/value changes and reloads
 parameters / re-opens the backend on the next audio buffer, so most changes apply without
 a reboot. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
@@ -163,7 +168,8 @@ clarifae-ctl version
   `sepolicy.rule` is included for stricter devices.
 - **DTLN/DeepFilterNet are experimental** and require extra runtimes/models; without them
   Clarifae uses RNNoise.
-- Real-time enhancement adds a small fixed latency (~10 ms for RNNoise + resampler).
+- With RNNoise v0.2, aligned streaming adds 30 ms at 48 kHz, plus platform latency;
+  other rates include resampling/priming rounding. Full bypass is immediate.
 
 ## Licensing & credits
 
