@@ -1,0 +1,73 @@
+{
+  "dtln_repository": "https://github.com/breizhn/DTLN",
+  "dtln_commit": "1de1f15a8b5b7e1c44905618ff2ef70ca8277fbc",
+  "runtime_maven_coordinate": "com.google.ai.edge.litert:litert:1.2.0",
+  "runtime_origin": "Google official Maven, NOT a third-party runtime",
+  "runtime_soname": "libtensorflowlite_jni.so",
+  "runtime_sha256": "7775cc7f797afc90b8de5c49dca12db7595cfc69e4f7928d412c1bc53f5bb058",
+  "assets": [
+    {
+      "destination": "reference/real_time_processing_tf_lite.py",
+      "url": "https://raw.githubusercontent.com/breizhn/DTLN/1de1f15a8b5b7e1c44905618ff2ef70ca8277fbc/real_time_processing_tf_lite.py",
+      "sha256": "bc7134f89257b70b5c86698d731e0c4ca09dbb4df6bfe5641a6d0e9d18af8114"
+    },
+    {
+      "destination": "reference/LICENSE",
+      "url": "https://raw.githubusercontent.com/breizhn/DTLN/1de1f15a8b5b7e1c44905618ff2ef70ca8277fbc/LICENSE",
+      "sha256": "aa95acd8c8a7341bfcdb2823694dcbb27a2a4143e860bb52db1ff0f29c85e5a1"
+    },
+    {
+      "destination": "reference/README.md",
+      "url": "https://raw.githubusercontent.com/breizhn/DTLN/1de1f15a8b5b7e1c44905618ff2ef70ca8277fbc/README.md",
+      "sha256": "1f518d30bc8fbd4cdd0cfa5735630162852a33510ad149fd3204f124d3ad51d2"
+    },
+    {
+      "destination": "models/model_1.tflite",
+      "url": "https://raw.githubusercontent.com/breizhn/DTLN/1de1f15a8b5b7e1c44905618ff2ef70ca8277fbc/pretrained_model/model_1.tflite",
+      "sha256": "91281a38e80fe9fd330e28eda7e16fe4e483ee5199a3e687a099939013c25de0"
+    },
+    {
+      "destination": "models/model_2.tflite",
+      "url": "https://raw.githubusercontent.com/breizhn/DTLN/1de1f15a8b5b7e1c44905618ff2ef70ca8277fbc/pretrained_model/model_2.tflite",
+      "sha256": "7ae37ec802862d8a65b5cdabfbcbbe22caaf7cd39e79adf574d15837d1520830"
+    },
+    {
+      "destination": "downloads/litert-1.2.0.aar",
+      "url": "https://dl.google.com/dl/android/maven2/com/google/ai/edge/litert/litert/1.2.0/litert-1.2.0.aar",
+      "sha256": "fe78ecb1bc1588e08c4c80642f7e3fae1d1d4f1596bed7b698ba12a9c2fbe043",
+      "host_test_only": false
+    },
+    {
+      "destination": "downloads/ai_edge_litert-1.2.0-cp311-cp311-macosx_12_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/df/b5/0b3219c8b4343d86b0ef57edeb7531bbd5a1a83d32ce51f7202aa187951e/ai_edge_litert-1.2.0-cp311-cp311-macosx_12_0_arm64.whl",
+      "sha256": "cea0f219cad3d5404748a44d3f47d66ae93467795fc8b1768d433baeb6ce425c",
+      "host_test_only": true
+    },
+    {
+      "destination": "downloads/numpy-2.4.6-cp311-cp311-macosx_14_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/ad/40/40a40ee0ddf7ceb782c49af278894b686e586d65d8c1889c8b5da01a3d7d/numpy-2.4.6-cp311-cp311-macosx_14_0_arm64.whl",
+      "sha256": "4cfe66903cc32a9921a6733d96b19bb6abf310397581bbad89c228f5abaf0ee8",
+      "host_test_only": true
+    }
+  ],
+  "installed_headers": {
+    "external/org_tensorflow/tensorflow/compiler/mlir/lite/core/c/builtin_op_data.h": "2542dd2b74dfd58c153414b17c3451660c64e3a47c1f9a4cc45d52751e9e1d62",
+    "external/org_tensorflow/tensorflow/compiler/mlir/lite/core/c/tflite_types.h": "11b64f1ec5e013e39953ffdae21a6cc139ba1ca500a302ebfff76df2681ea4b7",
+    "tflite/builtin_ops.h": "78ac84e3366abcc22be656580a3f4e5701902d30769e5749fda5079cce826e3d",
+    "tflite/c/builtin_op_data.h": "b32630397e31a92282a0f7379071a88c77d2f69101411a33ff8be9ef86239f78",
+    "tflite/c/c_api.h": "4911095e17091a720f890609ac00969051e6f4f1c8f071bc454459a7c00124b8",
+    "tflite/c/c_api_experimental.h": "59db421ff19a5419b278423dfc7276484aa3ddf912e89f425952f34cb557603f",
+    "tflite/c/c_api_opaque.h": "0fb1c03888435ddef85df3b552ff138d153711a7a01e2df601af46200fc87fc0",
+    "tflite/c/c_api_types.h": "6c1d75ffbff4e844c1026185dabf8580dd10bf3eea181867f542884f9e6387b7",
+    "tflite/c/common.h": "cc7f9c4af1c48ec4c6aab4f041900c6d34efe96c3c0abb61c5cf60a83e12a0e0",
+    "tflite/core/async/c/types.h": "09caaccd1a1ebb824d9748fc36a5e0c3d45f9c99f3f0f80ce2cca87218687d14",
+    "tflite/core/c/builtin_op_data.h": "7f17ed358e6ee3404feae190b7fcfa3a54cec6020a5bd4c10d816873810c094a",
+    "tflite/core/c/c_api.h": "a28ff8927059a3bc90717c99b9d1eef605678d4a07e321b2b96afec15d0c9dc4",
+    "tflite/core/c/c_api_experimental.h": "b6fbfa061656d025779976939201cc0d3ae48e030fef52aa860cbdce94b4d841",
+    "tflite/core/c/c_api_opaque.h": "ef685e292e977d7c03d20b6b0aa99580317a3302b21b41184ecc7bebc767108a",
+    "tflite/core/c/c_api_types.h": "5c61f7e658e5e181aada8999bf8482fd1d0a37e6067a796ccede00a2fd4ac8fe",
+    "tflite/core/c/common.h": "7e3174ed8358abe9e4575c2356222f3697758ebd5b3f68802a15cea739782135",
+    "tflite/core/c/operator.h": "d9fb7cfb068b4ad714114d927b9fa82d9f0ec5c68e518e3d20ef37c41bfd2187",
+    "tflite/delegates/nnapi/nnapi_delegate_c_api.h": "f4c85ca064f544a63ec7ee066d606efeba5ac82c29a8ee50c264f1af99c11076"
+  }
+}
