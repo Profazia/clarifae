@@ -1,0 +1,8 @@
+/base/
+/state/
+/ram/
+/files
+/boot
+/*.log
+/__pycache__/
+/tests/__pycache__/

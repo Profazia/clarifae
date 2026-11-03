@@ -1,0 +1,42 @@
+# Minimal packaging manifest only. Source is byte-for-byte official libDF.
+# Keep training/audio-file/Python dependencies out of the Android runtime.
+[package]
+name = "deep_filter"
+version = "0.5.7-pre"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+[lib]
+name = "df"
+path = "../upstream/libDF/src/lib.rs"
+crate-type = ["rlib"]
+[features]
+default = []
+tract = ["transforms", "logging"]
+transforms = []
+logging = []
+capi = []
+dataset = []
+default-model = []
+default-model-ll = []
+wasm = []
+wav-utils = []
+timings = []
+nightly-features = []
+[dependencies]
+rustfft = "=6.2.0"
+realfft = "=3.3.0"
+itertools = "=0.12.1"
+num-complex = { version = "=0.4.5", features = ["serde"] }
+thiserror = "=1.0.59"
+ndarray = { version = "=0.15.6", features = ["serde"] }
+rubato = "=0.14.1"
+log = { version = "=0.4.21", features = ["std", "max_level_off", "release_max_level_off"] }
+crossbeam-channel = "=0.5.12"
+anyhow = "=1.0.82"
+rust-ini = "=0.21.0"
+tract-core = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+tract-hir = "=0.21.4"
+flate2 = "=1.0.30"
+tar = "=0.4.40"

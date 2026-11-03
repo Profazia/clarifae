@@ -1,0 +1,21 @@
+--- a/common/functions.sh
++++ b/common/functions.sh
+@@ -71 +71 @@
+-_setp() {
++_setp_legacy() {
+@@ -76,0 +77,15 @@
++}
++
++# Vendor-audio aliases are readable by the HAL without policy changes.
++# Every ordinary CLI/WebUI write goes through this same function.
++_setp() {
++  case "$1" in
++    persist.clarifae.*)
++      if ! /system/bin/setprop "persist.vendor.audio.clarifae.${1#persist.clarifae.}" "$2"; then
++        /system/bin/setprop persist.vendor.audio.clarifae.adapter 0 2>/dev/null || true
++        clarifae_log "vendor mirror failed; capture adapter disabled"
++        return 1
++      fi
++      ;;
++  esac
++  _setp_legacy "$1" "$2"

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>Clarifae</title>
+  <link rel="icon" type="image/svg+xml" href="assets/icon.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <img class="logo" src="assets/logo-white.svg" alt="Clarifae" />
+      <p class="tagline">Real-time AI audio clarity</p>
+      <span id="env-badge" class="badge hidden">preview</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- master switch -->
+    <section class="card master" aria-label="Master switch">
+      <div class="master-text">
+        <h2>Clarity engine</h2>
+        <p id="master-sub">Clean your microphone and the audio you hear, in real time.</p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="enable-toggle" />
+        <span class="slider-track"></span>
+      </label>
+    </section>
+
+    <!-- direction -->
+    <section class="card" aria-label="What to clean">
+      <h3 class="section-title flush">What to clean</h3>
+      <div class="toggle-row">
+        <div><span class="toggle-label">Microphone (input)</span><p class="control-help">Cleans your outgoing voice on calls &amp; recordings.</p></div>
+        <label class="switch sm"><input type="checkbox" id="in_enabled" /><span class="slider-track"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div><span class="toggle-label">Playback (output)</span><p class="control-help">Cleans the audio you hear from the speaker/headphones.</p></div>
+        <label class="switch sm"><input type="checkbox" id="out_enabled" /><span class="slider-track"></span></label>
+      </div>
+    </section>
+
+    <!-- modes -->
+    <section aria-label="Clarity mode">
+      <h3 class="section-title">Clarity mode</h3>
+      <div class="modes">
+        <button class="mode-card" data-mode="1">
+          <div class="mode-head"><span class="mode-name">Low latency</span><span class="pill ok">RNNoise</span></div>
+          <p class="mode-desc">Compact RNN denoiser. Lowest CPU and delay — best for calls and always-on mic.</p>
+          <span class="mode-status" data-model="rnnoise"></span>
+        </button>
+        <button class="mode-card" data-mode="2">
+          <div class="mode-head"><span class="mode-name">Balanced</span><span class="pill exp">DTLN</span></div>
+          <p class="mode-desc">Dual-signal LSTM. Stronger denoising. Experimental — needs DTLN models.</p>
+          <span class="mode-status" data-model="dtln"></span>
+        </button>
+        <button class="mode-card" data-mode="3">
+          <div class="mode-head"><span class="mode-name">Maximum clarity</span><span class="pill exp">DeepFilterNet</span></div>
+          <p class="mode-desc">Full-band 48 kHz enhancement. Highest quality. Experimental — needs libdf + model.</p>
+          <span class="mode-status" data-model="df"></span>
+        </button>
+      </div>
+      <p class="hint" id="mode-fallback-hint"></p>
+    </section>
+
+    <!-- tuning -->
+    <section class="card" aria-label="Tuning">
+      <h3 class="section-title flush">Tuning</h3>
+
+      <div class="control">
+        <div class="control-row"><label for="strength">Microphone strength</label><span class="val" id="strength-val">70</span></div>
+        <input type="range" id="strength" min="0" max="100" step="1" />
+        <p class="control-help">How much of the cleaned mic signal to blend in (wet/dry).</p>
+      </div>
+
+      <div class="control">
+        <div class="control-row"><label for="out_strength">Playback strength</label><span class="val" id="out_strength-val">60</span></div>
+        <input type="range" id="out_strength" min="0" max="100" step="1" />
+        <p class="control-help">Blend for output cleanup. These are speech models — lower this if music sounds over-processed.</p>
+      </div>
+
+      <div class="control">
+        <div class="control-row"><label for="atten_db">Max suppression</label><span class="val" id="atten_db-val">24 dB</span></div>
+        <input type="range" id="atten_db" min="0" max="60" step="1" />
+        <p class="control-help">Caps how aggressively noise is attenuated (protects natural tone).</p>
+      </div>
+
+      <div class="control">
+        <div class="control-row"><label for="vad">Voice gate</label><span class="val" id="vad-val">50</span></div>
+        <input type="range" id="vad" min="0" max="100" step="1" />
+        <p class="control-help">Voice-activity sensitivity used for gating and auto-gain.</p>
+      </div>
+
+      <div class="toggle-row">
+        <div><span class="toggle-label">High-pass filter</span><p class="control-help">Removes DC offset and low rumble.</p></div>
+        <label class="switch sm"><input type="checkbox" id="highpass" /><span class="slider-track"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div><span class="toggle-label">Auto gain</span><p class="control-help">Gently boosts quiet speech (may pump in noise).</p></div>
+        <label class="switch sm"><input type="checkbox" id="autogain" /><span class="slider-track"></span></label>
+      </div>
+    </section>
+
+    <!-- input targets -->
+    <section class="card" aria-label="Capture sources">
+      <h3 class="section-title flush">Microphone — capture sources</h3>
+      <div class="chips" id="chips-in">
+        <button class="chip" data-target="mic">Microphone</button>
+        <button class="chip" data-target="voice_comm">Calls / VoIP</button>
+        <button class="chip" data-target="camcorder">Camcorder</button>
+        <button class="chip" data-target="voice_rec">Voice rec.</button>
+      </div>
+      <p class="hint">Changing sources fully applies after re-flashing the module and rebooting (routing is set at install time).</p>
+    </section>
+
+    <!-- output targets -->
+    <section class="card" aria-label="Playback streams">
+      <h3 class="section-title flush">Playback — output streams</h3>
+      <div class="chips" id="chips-out">
+        <button class="chip" data-otarget="music">Media / music</button>
+        <button class="chip" data-otarget="voice_call">Calls</button>
+        <button class="chip" data-otarget="ring">Ring</button>
+        <button class="chip" data-otarget="alarm">Alarm</button>
+        <button class="chip" data-otarget="notification">Notifications</button>
+        <button class="chip" data-otarget="system">System</button>
+      </div>
+      <p class="hint">⚠ These are speech-enhancement models. On <b>Media/music</b> they clean speech in videos/podcasts but degrade actual music — use Playback strength to taste. Routing changes need a re-flash + reboot.</p>
+    </section>
+
+    <!-- actions -->
+    <p id="command-warning" class="hint hidden" role="alert"></p>
+    <section class="actions">
+      <button class="btn primary" id="btn-apply">Apply settings</button>
+      <button class="btn" id="btn-restart">Restart audio</button>
+      <button class="btn" id="btn-log">View log</button>
+      <button class="btn danger" id="btn-reset">Reset</button>
+    </section>
+
+    <p class="hint">Opt-in reference: Apply rebuilds audited live routes; Restart also applies selections. Requires initialized same-boot manager; neither action proves usable PCM. Do not use during calls or recordings.</p>
+
+    <!-- status -->
+    <section class="card" aria-label="Status">
+      <div class="section-title flush with-action">
+        <span>Engine status</span>
+        <button class="btn tiny" id="btn-refresh">Refresh</button>
+      </div>
+      <div class="status-grid" id="status-grid"></div>
+    </section>
+
+    <footer class="foot">
+      <span id="version">Clarifae</span> · RNNoise · DTLN · DeepFilterNet
+    </footer>
+  </main>
+
+  <!-- log modal -->
+  <div class="modal hidden" id="log-modal">
+    <div class="modal-box">
+      <div class="modal-head"><span>Log</span><button class="btn tiny" id="log-close">Close</button></div>
+      <pre id="log-content">…</pre>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="kernelsu.js?v=optin-routing-ref-20261103"></script>
+  <script src="app.js?v=optin-routing-ref-20261103" defer></script>
+</body>
+</html>

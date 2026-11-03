@@ -1,0 +1,138 @@
+[
+  {
+    "stage": 1,
+    "input": [
+      {
+        "index": 0,
+        "name": "input_2",
+        "shape": [
+          1,
+          1,
+          257
+        ],
+        "dtype": "<class 'numpy.float32'>",
+        "bytes": 1028
+      },
+      {
+        "index": 1,
+        "name": "input_3",
+        "shape": [
+          1,
+          2,
+          128,
+          2
+        ],
+        "dtype": "<class 'numpy.float32'>",
+        "bytes": 2048
+      }
+    ],
+    "output": [
+      {
+        "index": 66,
+        "name": "Identity",
+        "shape": [
+          1,
+          1,
+          257
+        ],
+        "dtype": "<class 'numpy.float32'>",
+        "bytes": 1028
+      },
+      {
+        "index": 69,
+        "name": "Identity_1",
+        "shape": [
+          1,
+          2,
+          128,
+          2
+        ],
+        "dtype": "<class 'numpy.float32'>",
+        "bytes": 2048
+      }
+    ],
+    "builtin_ops": [
+      "ADD",
+      "FULLY_CONNECTED",
+      "LOGISTIC",
+      "MUL",
+      "PACK",
+      "RESHAPE",
+      "SPLIT",
+      "STRIDED_SLICE",
+      "TANH",
+      "UNPACK"
+    ]
+  },
+  {
+    "stage": 2,
+    "input": [
+      {
+        "index": 0,
+        "name": "input_4",
+        "shape": [
+          1,
+          1,
+          512
+        ],
+        "dtype": "<class 'numpy.float32'>",
+        "bytes": 2048
+      },
+      {
+        "index": 1,
+        "name": "input_5",
+        "shape": [
+          1,
+          2,
+          128,
+          2
+        ],
+        "dtype": "<class 'numpy.float32'>",
+        "bytes": 2048
+      }
+    ],
+    "output": [
+      {
+        "index": 95,
+        "name": "Identity",
+        "shape": [
+          1,
+          1,
+          512
+        ],
+        "dtype": "<class 'numpy.float32'>",
+        "bytes": 2048
+      },
+      {
+        "index": 98,
+        "name": "Identity_1",
+        "shape": [
+          1,
+          2,
+          128,
+          2
+        ],
+        "dtype": "<class 'numpy.float32'>",
+        "bytes": 2048
+      }
+    ],
+    "builtin_ops": [
+      "ADD",
+      "CONV_2D",
+      "FULLY_CONNECTED",
+      "LOGISTIC",
+      "MEAN",
+      "MUL",
+      "PACK",
+      "PAD",
+      "RESHAPE",
+      "RSQRT",
+      "SPLIT",
+      "SQUARED_DIFFERENCE",
+      "STRIDED_SLICE",
+      "SUB",
+      "TANH",
+      "UNPACK"
+    ]
+  }
+]
