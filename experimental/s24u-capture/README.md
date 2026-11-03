@@ -16,7 +16,8 @@ The legacy ABI/RNNoise fixes are a separate, smaller contribution. This director
 - `backends/dtln/`: official model/runtime pins, complete TFLite tensor/scaling checks, per-channel streaming and real-model tests.
 - `backends/df/`: checked Rust C boundary and locked tract closure over unmodified pinned official DSP/model; no guessed upstream C ABI.
 - `tests/`: forwarding, singleton lifecycle, malformed/partial/error reads, mute/bypass, invalid output, blocked diagnostics/cancellation, exact property snapshots, construction-disable interleavings and barrier-controlled stale-mode tests. Slow fake backends exercise observational stats, whole-callback adoption, live dry hold/fade, disabled lifecycle and playback total delivery. Android-property/optional-runtime stubs are clearly test-only.
-- `control/vendor-property-mirror.patch`: proposed companion change, **not applied automatically**. This is a zero-context review patch (validate with `git apply --check --unidiff-zero`); it is not part of normal installation. A vendor-reading engine must never be installed without updating every normal WebUI/CLI writer and sync path. Otherwise an old vendor alias can defeat the master-disable control.
+- `control/live-routing/`: separately opt-in same-boot routing manager/renderer, optional UI/control integration copies, synthetic XML/transaction/UI tests, initialization contract and explicit divergence from the earlier device-tested manager. No vendor XML templates or automated initialization.
+- `control/vendor-property-mirror.patch`: older proposed companion change, **not applied automatically**. The newer opt-in source copies supersede it for live-routing integration; do not apply both blindly. This is a zero-context review patch (validate with `git apply --check --unidiff-zero`); it is not part of normal installation. A vendor-reading engine must never be installed without updating every normal WebUI/CLI writer and sync path. Otherwise an old vendor alias can defeat the master-disable control.
 
 ## Build without touching a phone
 
@@ -57,7 +58,7 @@ Any integrator must pin their exact stock firmware hashes; independently verify 
 
 ### Playback and lifecycle scope (3 November update)
 
-The experimental output descriptor is a **software session INSERT**, not a HAL/output-stage POST_PROC. This is intentionally not transplanted into the portable fix. Successful attachment/PCM on one software-session path does not establish automatic compatibility with other policy routes, firmware, offload or MMAP. No routing XML overlay, deployment script or separate UI routing/control-manager change is included here.
+The experimental output descriptor is a **software session INSERT**, not a HAL/output-stage POST_PROC. This is intentionally not transplanted into the portable fix. Successful attachment/PCM on one software-session path does not establish automatic compatibility with other policy routes, firmware, offload or MMAP. No routing overlay is activated by this tree. The separately opt-in source reference in control/live-routing includes a same-boot manager/renderer and optional UI/control copies; it is not installed automatically and requires audited initialization.
 
 Ordinary music/media **must be opt-in**, not automatically denoised. A product integration should keep alarm/ring/notification/system media raw and make any music policy explicit. Output strength is independent; microphone HP/AGC are never inherited by output. This snapshot leaves the normal installer and its existing defaults untouched; it does not automatically install that policy or activate the experimental engine.
 

@@ -25,7 +25,9 @@ device evidence in VERIFICATION.md from a new host/crossbuild:
 - Capture bridge: `5b889b6abed6b4fa73c28b1bf2c78983d69fc9f3f245e279b0badfbc94c671b6`
 
 No proprietary HAL, PCM, phone dump, model/runtime binary or toolchain is
-included. No automatic route overlay or UI routing/control-manager change is included.
+included. No automatic route overlay is installed. The separate opt-in UI/routing
+source follow-up is documented under control/live-routing; it does not change
+the engine/capture source identities recorded here.
 
 ## Relocated host checks
 

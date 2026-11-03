@@ -1,0 +1,191 @@
+#!/system/bin/sh
+# clarifae-ctl — Clarifae control CLI (installed to /system/bin/clarifae-ctl).
+# Drives config.conf + persist.clarifae.* and reports engine status. The WebUI
+# calls this via the KernelSU root shell.
+
+# Load shared helpers (installed copy first, then in-tree fallbacks).
+for _f in /data/adb/clarifae/functions.sh "${0%/*}/../common/functions.sh" "${0%/*}/functions.sh"; do
+  [ -f "$_f" ] && { . "$_f"; break; }
+done
+
+jbool() { [ "$1" = "1" ] && echo true || echo false; }
+
+# CSV names must be whole tokens from the existing portable route maps.
+# Output permits an explicit empty list; capture keeps at least one source.
+validate_targets() (
+  _csv_side="$1"; _csv="$2"
+  [ "$_csv_side" = out_targets ] && [ -z "$_csv" ] && return 0
+  case "$_csv" in ''|,*|*,|*,,*) return 1 ;; esac
+  while :; do
+    _token="${_csv%%,*}"
+    case "$_csv_side:$_token" in
+      targets:mic|targets:voice_comm|targets:camcorder|targets:voice_rec) ;;
+      out_targets:music|out_targets:media|out_targets:voice_call|out_targets:calls|out_targets:ring|out_targets:alarm|out_targets:notification|out_targets:notif|out_targets:system) ;;
+      *) return 1 ;;
+    esac
+    case "$_csv" in *,*) _csv="${_csv#*,}" ;; *) return 0 ;; esac
+  done
+)
+
+uint_range() {
+  # Also reject leading zeros/signs/whitespace, which are not JSON numbers.
+  case "$1" in ''|*[!0-9]*|0[0-9]*) return 1 ;; esac
+  [ "$1" -le "$2" ] 2>/dev/null
+}
+
+validate() {
+  k="$1"; v="$2"
+  case "$k" in
+    enabled|in_enabled|out_enabled|highpass|autogain) case "$v" in 0|1) return 0;; *) return 1;; esac ;;
+    mode)     case "$v" in 1|2|3) return 0;; *) return 1;; esac ;;
+    loglevel) case "$v" in 0|1|2|3) return 0;; *) return 1;; esac ;;
+    strength|out_strength|vad) uint_range "$v" 100 ;;
+    atten_db) uint_range "$v" 60 ;;
+    targets|out_targets) validate_targets "$k" "$v" ;;
+    *) return 1 ;;
+  esac
+}
+
+# $1 = lib | lib64. Check the mounted system/vendor overlays AND the module's
+# own staging dir — the WebUI's exec mount namespace may not have the systemless
+# overlay applied, so /system/... can read as absent even though audioserver
+# loads it. ${MODULE_DIR:-...} guards against an old functions.sh without it.
+have_lib() {
+  [ -f "/system/$1/soundfx/libclarifae.so" ] && return 0
+  [ -f "/vendor/$1/soundfx/libclarifae.so" ] && return 0
+  [ -f "${MODULE_DIR:-/data/adb/modules/clarifae}/system/$1/soundfx/libclarifae.so" ]
+}
+
+cmd_set() {
+  k="$1"; v="$2"
+  validate "$k" "$v" || { echo "invalid: $k=$v" >&2; return 1; }
+  conf_set "$k" "$v" || { echo "could not save $k" >&2; return 1; }
+  _setp "persist.clarifae.$k" "$v" || { echo "saved $k, but property sync failed" >&2; return 1; }
+  clarifae_log "set $k=$v"
+  echo "$k=$v"
+}
+
+cmd_get_json() {
+  conf_init || { echo "could not initialize config" >&2; return 1; }
+  printf '{'
+  printf '"enabled":%s,'     "$(jbool "$(conf_get enabled)")"
+  printf '"in_enabled":%s,'  "$(jbool "$(conf_get in_enabled)")"
+  printf '"out_enabled":%s,' "$(jbool "$(conf_get out_enabled)")"
+  printf '"mode":%s,'        "$(conf_get mode)"
+  printf '"mode_name":"%s",' "$(mode_name "$(conf_get mode)")"
+  printf '"strength":%s,'     "$(conf_get strength)"
+  printf '"out_strength":%s,' "$(conf_get out_strength)"
+  printf '"atten_db":%s,'  "$(conf_get atten_db)"
+  printf '"vad":%s,'       "$(conf_get vad)"
+  printf '"targets":"%s",'     "$(conf_get targets)"
+  printf '"out_targets":"%s",' "$(conf_get out_targets)"
+  printf '"highpass":%s,'  "$(jbool "$(conf_get highpass)")"
+  printf '"autogain":%s,'  "$(jbool "$(conf_get autogain)")"
+  printf '"loglevel":%s'   "$(conf_get loglevel)"
+  printf '}\n'
+}
+
+cmd_status_json() {
+  conf_init || { echo "could not initialize config" >&2; return 1; }
+  lib64=0; have_lib lib64 && lib64=1
+  lib32=0; have_lib lib   && lib32=1
+  xml=0;   is_audio_effects_patched && xml=1
+  mrnn=0;  { [ "$lib64" = 1 ] || [ "$lib32" = 1 ]; } && mrnn=1
+  mdtln=0; [ -f /data/adb/clarifae/models/dtln/model_1.tflite ] && \
+           [ -f /data/adb/clarifae/models/dtln/model_2.tflite ] && mdtln=1
+  mdf=0;   ls /data/adb/clarifae/models/df/* >/dev/null 2>&1 && mdf=1
+  asrv=0;  pidof audioserver >/dev/null 2>&1 && asrv=1
+  load=0;  dumpsys media.audio_flinger 2>/dev/null | grep -qi clarifae && load=1
+  printf '{'
+  printf '"enabled":%s,'    "$(jbool "$(conf_get enabled)")"
+  printf '"in_enabled":%s,"out_enabled":%s,' "$(jbool "$(conf_get in_enabled)")" "$(jbool "$(conf_get out_enabled)")"
+  printf '"mode":%s,"mode_name":"%s",' "$(conf_get mode)" "$(mode_name "$(conf_get mode)")"
+  printf '"strength":%s,"out_strength":%s,"atten_db":%s,"vad":%s,' "$(conf_get strength)" "$(conf_get out_strength)" "$(conf_get atten_db)" "$(conf_get vad)"
+  printf '"targets":"%s","out_targets":"%s",' "$(conf_get targets)" "$(conf_get out_targets)"
+  printf '"highpass":%s,"autogain":%s,"loglevel":%s,' \
+         "$(jbool "$(conf_get highpass)")" "$(jbool "$(conf_get autogain)")" "$(conf_get loglevel)"
+  printf '"lib32":%s,"lib64":%s,"xml_patched":%s,' "$(jbool "$lib32")" "$(jbool "$lib64")" "$(jbool "$xml")"
+  printf '"model_rnnoise":%s,"model_dtln":%s,"model_df":%s,' "$(jbool "$mrnn")" "$(jbool "$mdtln")" "$(jbool "$mdf")"
+  printf '"audioserver":%s,"effect_loaded":%s,' "$(jbool "$asrv")" "$(jbool "$load")"
+  printf '"version":"%s"' "$CLARIFAE_VERSION"
+  printf '}\n'
+}
+
+cmd_status() {
+  conf_init || { echo "could not initialize config" >&2; return 1; }
+  echo "Clarifae $CLARIFAE_VERSION"
+  echo "  enabled : $(conf_get enabled)  (mic:$(conf_get in_enabled) playback:$(conf_get out_enabled))"
+  echo "  mode    : $(conf_get mode) ($(mode_name "$(conf_get mode)"))"
+  echo "  strength: in $(conf_get strength) / out $(conf_get out_strength)   atten_db: $(conf_get atten_db)  vad: $(conf_get vad)"
+  echo "  in  src : $(conf_get targets)"
+  echo "  out src : $(conf_get out_targets)"
+  echo "  hp/agc  : $(conf_get highpass)/$(conf_get autogain)"
+  have_lib lib64 && echo "  lib64   : installed" || echo "  lib64   : missing"
+  have_lib lib   && echo "  lib32   : installed" || echo "  lib32   : (not installed)"
+  is_audio_effects_patched && echo "  xml     : patched" || echo "  xml     : NOT patched"
+  pidof audioserver >/dev/null 2>&1 && echo "  audiosrv: running" || echo "  audiosrv: stopped"
+  dumpsys media.audio_flinger 2>/dev/null | grep -qi clarifae \
+    && echo "  effect  : LOADED" || echo "  effect  : not detected (reopen capture / restart-audio)"
+}
+
+# OPT-IN reference only: an audited, initialized manager is mandatory.
+LIVE_ROUTES=/data/adb/clarifae/live-targets-20261103-v1/live-targets.sh
+route_manager() {
+  [ -f "$LIVE_ROUTES" ] && [ ! -L "$LIVE_ROUTES" ] &&
+    [ "$(stat -c %u "$LIVE_ROUTES")" = 0 ] &&
+    stat -c %a "$LIVE_ROUTES" | grep -Eq '^[0-7]*[0145][0145]$' || {
+      echo "routing manager absent/untrusted; audited initialization required" >&2;return 2;
+    }
+  sh "$LIVE_ROUTES" "$1"
+}
+cmd_apply() {
+  conf_init || return 1
+  prop_sync || { echo "settings sync failed; routes not applied" >&2;return 1; }
+  route_manager apply
+}
+
+cmd_reset() {
+  conf_init || { echo "could not initialize config" >&2; return 1; }
+  _reset_tmp="$CONFIG.tmp.$$"
+  if ! clarifae_defaults > "$_reset_tmp" || ! mv "$_reset_tmp" "$CONFIG"; then
+    rm -f "$_reset_tmp"
+    echo "could not reset config" >&2
+    return 1
+  fi
+  prop_sync || { echo "defaults saved, but property sync failed (possibly partial)" >&2; return 1; }
+  echo "defaults saved and settings synced; installed target routes unchanged"
+}
+
+cmd_restart_audio() {
+  conf_init || return 1
+  prop_sync || { echo "settings sync failed; restart not requested" >&2;return 1; }
+  route_manager restart
+}
+
+cmd_log() {
+  echo "==== clarifae-ctl log ===="; tail -n 60 "$LOGFILE" 2>/dev/null
+  echo "==== logcat -s Clarifae ===="; logcat -d -s Clarifae 2>/dev/null | tail -n 60
+}
+
+case "$1" in
+  get)           conf_init && cat "$CONFIG" ;;
+  get-json)      cmd_get_json ;;
+  set)           shift; [ "$#" -eq 2 ] || { echo "usage: clarifae-ctl set KEY VALUE" >&2; exit 2; }; cmd_set "$1" "$2" ;;
+  set-many)      shift; [ "$#" -gt 0 ] || { echo "set-many needs K=V arguments" >&2; exit 2; }
+                 rc=0
+                 for kv in "$@"; do
+                   case "$kv" in
+                     *=*) cmd_set "${kv%%=*}" "${kv#*=}" || rc=1 ;;
+                     *) echo "invalid assignment: $kv" >&2; rc=1 ;;
+                   esac
+                 done
+                 exit "$rc" ;;
+  apply)         cmd_apply ;;
+  status)        cmd_status ;;
+  status-json)   cmd_status_json ;;
+  restart-audio) cmd_restart_audio ;;
+  reset)         cmd_reset ;;
+  log)           cmd_log ;;
+  version)       echo "$CLARIFAE_VERSION" ;;
+  *) echo "usage: clarifae-ctl {get|get-json|set K V|set-many K=V..|apply|status|status-json|restart-audio|reset|log|version}" ;;
+esac
