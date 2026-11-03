@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <float.h>
 
 #define CLF_KIND_INPUT  0   /* capture pre-processing (clean the microphone) */
 #define CLF_KIND_OUTPUT 1   /* playback post-processing (clean what you hear) */
@@ -97,6 +98,11 @@ static void fill_descriptor(effect_descriptor_t* d, int kind) {
 }
 
 /* ---- backend lifecycle ---- */
+static int property_enabled(const clarifae_ctx_t* c) {
+    return c->cfg.enabled && (c->kind == CLF_KIND_OUTPUT
+                            ? c->cfg.out_enabled : c->cfg.in_enabled);
+}
+
 static void backend_close(clarifae_ctx_t* c) {
     if (c->backend && c->bstate) c->backend->destroy(c->bstate);
     c->backend = NULL;
@@ -111,12 +117,15 @@ static void backend_apply_params(clarifae_ctx_t* c) {
                                (float)strength / 100.0f,
                                (float)c->cfg.atten_db,
                                (float)c->cfg.vad / 100.0f,
-                               c->cfg.highpass, c->cfg.autogain);
+                               /* These are microphone controls, not playback filters. */
+                               c->kind == CLF_KIND_INPUT ? c->cfg.highpass : 0,
+                               c->kind == CLF_KIND_INPUT ? c->cfg.autogain : 0);
     }
 }
 
 static int backend_open(clarifae_ctx_t* c) {
     backend_close(c);
+    if (!property_enabled(c)) return 0;
     if (c->sample_rate == 0 || c->channels <= 0) return -EINVAL;
 
     char err[160] = {0};
@@ -150,6 +159,16 @@ static int ensure_fbuf(clarifae_ctx_t* c, size_t need) {
     return 0;
 }
 
+/* Playback mix buffers may contain finite headroom beyond normalized PCM.
+ * Repair only corrupt samples and saturate overflow without losing that headroom. */
+static float playback_sample(float v) { return isfinite(v) ? v : 0.0f; }
+static float playback_add(float a, float b) {
+    double sum = (double)playback_sample(a) + playback_sample(b);
+    /* Bound the double before conversion, rather than selecting float return
+     * values after a compiler-speculated overflowing double-to-float cast. */
+    return (float)fmax(-(double)FLT_MAX, fmin((double)FLT_MAX, sum));
+}
+
 /* ---- effect interface callbacks ---- */
 static int32_t ce_process_block(effect_handle_t self,
                           audio_buffer_t* in, audio_buffer_t* out) {
@@ -163,15 +182,14 @@ static int32_t ce_process_block(effect_handle_t self,
     if (frames > 2048 || frames > SIZE_MAX / ((size_t)ch * sizeof(float)))
         return -EINVAL; /* wrapper below splits large buffers */
 
-    /* live config refresh (per-instance property snapshots) */
+    /* A disabled side never selects/creates an optional backend. Compare the
+     * last built mode, not the last observed config: mode may change while off. */
     if (clarifae_config_changed(&c->config_watch)) {
-        int prev_mode = c->cfg.mode;
-        clarifae_config_load(&c->cfg);   /* also updates clarifae_log_level */
-        if (c->configured) {
-            if (!c->backend || (c->cfg.mode != prev_mode &&
+        clarifae_config_load(&c->cfg);
+        if (property_enabled(c)) {
+            if (!c->backend || !c->bstate || (c->cfg.mode != c->cur_mode &&
                 clarifae_backend_for_mode(c->cfg.mode) != c->backend)) {
-                /* Retain live legacy mode switching. This may allocate/load
-                 * optional runtimes on the audio thread; it is NOT RT-safe. */
+                /* Existing synchronous legacy semantics; NOT hard-RT safe. */
                 backend_open(c);
             } else {
                 backend_apply_params(c);
@@ -179,22 +197,18 @@ static int32_t ce_process_block(effect_handle_t self,
         }
     }
 
-    int side_enabled = (c->kind == CLF_KIND_OUTPUT) ? c->cfg.out_enabled
-                                                     : c->cfg.in_enabled;
-    int bypass = (!c->host_enabled) || (!c->cfg.enabled) || (!side_enabled) ||
-                 (!c->configured) || (!c->backend) || (!c->bstate);
-
+    int bypass = !c->host_enabled || !property_enabled(c) ||
+                 !c->backend || !c->bstate;
     if (bypass && !c->bypassed && c->backend && c->bstate) {
         c->backend->reset(c->bstate);
         c->processed_frames = 0;
     }
     c->bypassed = bypass;
 
-    /* Validate before bypass as well: invalid float PCM must not reach a
-     * backend, or leak NaN/Inf through an otherwise bit-exact copy. Float
-     * accumulation may exceed unity but its destination must be finite. */
     size_t n = frames * (size_t)ch;
-    if (c->in_format == AUDIO_FORMAT_PCM_FLOAT) {
+    /* Capture keeps the strict normalized input/error contract, including
+     * bypass and finite accumulation destinations. Playback is total-delivery. */
+    if (c->kind == CLF_KIND_INPUT && c->in_format == AUDIO_FORMAT_PCM_FLOAT) {
         for (size_t i = 0; i < n; i++) {
             if (!isfinite(in->f32[i]) || fabsf(in->f32[i]) > 1.0f ||
                 (c->out_access == EFFECT_BUFFER_ACCESS_ACCUMULATE &&
@@ -202,55 +216,77 @@ static int32_t ce_process_block(effect_handle_t self,
         }
     }
 
-    /* ---- bypass: copy input to output (respecting accumulate) ---- */
+    if (!bypass) {
+        /* SET_CONFIG reserves the maximum chunk; never resize scratch here. */
+        if (n > c->fbuf_cap) return -EINVAL;
+        if (!c->processed_frames)
+            CLARIFAE_LOGI("processing %s backend=%s strength=%d rate=%u ch=%d",
+                c->kind ? "output" : "input", c->backend->name,
+                c->kind ? c->cfg.out_strength : c->cfg.strength, c->sample_rate, ch);
+        for (size_t i = 0; i < n; i++) {
+            if (c->in_format == AUDIO_FORMAT_PCM_FLOAT) {
+                float v = in->f32[i];
+                if (c->kind == CLF_KIND_OUTPUT) {
+                    v = playback_sample(v);
+                    if (v > 1.0f) v = 1.0f;
+                    else if (v < -1.0f) v = -1.0f;
+                }
+                c->fbuf[i] = v * 32768.0f;
+            } else {
+                c->fbuf[i] = (float)in->s16[i];
+            }
+        }
+        int rc = c->backend->process(c->bstate, c->fbuf, (int)frames);
+        if (!rc) {
+            for (size_t i = 0; i < n; i++)
+                if (!isfinite(c->fbuf[i])) { rc = -EINVAL; break; }
+        }
+        if (rc) {
+            if (c->kind == CLF_KIND_INPUT) return -EINVAL;
+            /* The backend may have overwritten all scratch before failing.
+             * Original input is still untouched, also for exact in-place use.
+             * Deliver dry for this whole chunk and flush the failed DSP state. */
+            c->backend->reset(c->bstate);
+            bypass = 1;
+        } else {
+            c->processed_frames += frames;
+        }
+    }
+
     if (bypass) {
         if (c->in_format == AUDIO_FORMAT_PCM_FLOAT) {
-            if (c->out_access == EFFECT_BUFFER_ACCESS_ACCUMULATE)
-                for (size_t i = 0; i < n; i++) out->f32[i] += in->f32[i];
-            else
+            if (c->out_access == EFFECT_BUFFER_ACCESS_ACCUMULATE) {
+                for (size_t i = 0; i < n; i++)
+                    out->f32[i] = c->kind == CLF_KIND_OUTPUT
+                        ? playback_add(out->f32[i], in->f32[i]) : out->f32[i] + in->f32[i];
+            } else {
                 memmove(out->f32, in->f32, n * sizeof(float));
+                if (c->kind == CLF_KIND_OUTPUT)
+                    for (size_t i = 0; i < n; i++) out->f32[i] = playback_sample(out->f32[i]);
+            }
         } else {
             if (c->out_access == EFFECT_BUFFER_ACCESS_ACCUMULATE)
                 for (size_t i = 0; i < n; i++) {
                     int32_t v = out->s16[i] + in->s16[i];
                     out->s16[i] = (int16_t)(v < -32768 ? -32768 : (v > 32767 ? 32767 : v));
                 }
-            else
-                memmove(out->s16, in->s16, n * sizeof(int16_t));
+            else memmove(out->s16, in->s16, n * sizeof(int16_t));
         }
         return c->host_enabled ? 0 : -ENODATA;
     }
 
-    if (!c->processed_frames)
-        CLARIFAE_LOGI("processing %s backend=%s strength=%d rate=%u ch=%d",
-            c->kind ? "output" : "input", c->backend->name,
-            c->kind ? c->cfg.out_strength : c->cfg.strength, c->sample_rate, ch);
-    /* SET_CONFIG reserves the maximum chunk; do not allocate scratch here. */
-    if (n > c->fbuf_cap) return -EINVAL;
-
-    /* input -> float (int16 range) */
-    if (c->in_format == AUDIO_FORMAT_PCM_FLOAT) {
-        for (size_t i = 0; i < n; i++) c->fbuf[i] = in->f32[i] * 32768.0f;
-    } else {
-        for (size_t i = 0; i < n; i++) c->fbuf[i] = (float)in->s16[i];
-    }
-
-    if (c->backend->process(c->bstate, c->fbuf, (int)frames)) return -EINVAL;
-    for (size_t i = 0; i < n; i++)
-        if (!isfinite(c->fbuf[i])) return -EINVAL;
-
-    /* float -> output */
     if (c->out_format == AUDIO_FORMAT_PCM_FLOAT) {
         for (size_t i = 0; i < n; i++) {
             float v = c->fbuf[i] / 32768.0f;
             if (v < -1.0f) v = -1.0f; else if (v > 1.0f) v = 1.0f;
-            if (c->out_access == EFFECT_BUFFER_ACCESS_ACCUMULATE) out->f32[i] += v;
+            if (c->out_access == EFFECT_BUFFER_ACCESS_ACCUMULATE)
+                out->f32[i] = c->kind == CLF_KIND_OUTPUT
+                    ? playback_add(out->f32[i], v) : out->f32[i] + v;
             else out->f32[i] = v;
         }
     } else {
         for (size_t i = 0; i < n; i++) {
-            /* Clamp BEFORE rounding/conversion, including huge finite output
-             * from an optional backend (long is only 32 bits on armeabi-v7a). */
+            /* Clamp before rounding: long is only 32 bits on armeabi-v7a. */
             float fv = c->fbuf[i];
             if (fv < -32768.0f) fv = -32768.0f;
             else if (fv > 32767.0f) fv = 32767.0f;
@@ -258,12 +294,9 @@ static int32_t ce_process_block(effect_handle_t self,
             if (c->out_access == EFFECT_BUFFER_ACCESS_ACCUMULATE) {
                 int32_t a = out->s16[i] + v;
                 out->s16[i] = (int16_t)(a < -32768 ? -32768 : (a > 32767 ? 32767 : a));
-            } else {
-                out->s16[i] = (int16_t)v;
-            }
+            } else out->s16[i] = (int16_t)v;
         }
     }
-    c->processed_frames += frames;
     return 0;
 }
 
@@ -345,8 +378,11 @@ static int configure(clarifae_ctx_t* c, const effect_config_t* requested) {
     /* Snapshot BEFORE loading: do not consume a disable racing the load. */
     clarifae_config_changed(&c->config_watch);
     clarifae_config_load(&c->cfg);
+    /* Format configuration remains valid without a ready backend. Fresh
+     * master/side-off lifecycles perform no backend lookup/create/reset. */
     int rc = backend_open(c);
-    c->configured = rc == 0;
+    c->configured = rc == 0 || c->kind == CLF_KIND_OUTPUT;
+    if (c->kind == CLF_KIND_OUTPUT) rc = 0; /* failed setup still delivers dry */
     c->processed_frames = 0;
     return rc;
 }

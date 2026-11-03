@@ -46,7 +46,10 @@ add_executable(config_watch config_watch.c "${NATIVE}/config.c"
 add_executable(effect_contract effect_contract.c "${NATIVE}/effect.c"
     "${NATIVE}/config.c" host-stubs/system_properties.c host-stubs/backend_probe.c)
 target_link_libraries(effect_contract PRIVATE m)
-foreach(target clarifae_test effect_smoke backend_pipeline config_watch effect_contract)
+add_executable(output_matrix output_matrix.c "${NATIVE}/effect.c"
+    "${NATIVE}/config.c" host-stubs/system_properties.c host-stubs/backend_probe.c)
+target_link_libraries(output_matrix PRIVATE m)
+foreach(target clarifae_test effect_smoke backend_pipeline config_watch effect_contract output_matrix)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
 endforeach()
 
@@ -55,10 +58,11 @@ add_test(NAME effect_smoke COMMAND effect_smoke $<TARGET_FILE:clarifae_test>)
 add_test(NAME backend_pipeline COMMAND backend_pipeline)
 add_test(NAME config_watch COMMAND config_watch)
 add_test(NAME effect_contract COMMAND effect_contract)
-set_tests_properties(effect_smoke backend_pipeline config_watch effect_contract
+add_test(NAME output_matrix COMMAND output_matrix)
+set_tests_properties(effect_smoke backend_pipeline config_watch effect_contract output_matrix
                      PROPERTIES TIMEOUT 180)
 if(APPLE AND CLARIFAE_SANITIZERS)
   # Apple ASan does not supply LeakSanitizer.
-  set_tests_properties(effect_smoke backend_pipeline config_watch effect_contract
+  set_tests_properties(effect_smoke backend_pipeline config_watch effect_contract output_matrix
                        PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 endif()

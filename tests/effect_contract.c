@@ -261,11 +261,145 @@ static void configuration(void) {
     CHECK(AELI.release_effect(h) == 0);
 }
 
+static void no_backend_work(void) {
+    CHECK(probe_metrics.lookups == 0 && probe_metrics.resets == 0 &&
+          probe_metrics.processes == 0 && probe_metrics.destroys == 0);
+    for (int mode = 1; mode <= 3; ++mode)
+        CHECK(probe_metrics.creates[mode] == 0 && probe_metrics.create_attempts[mode] == 0);
+}
+static void disabled_lifecycle(void) {
+    for (int output = 0; output < 2; ++output)
+        for (int master = 0; master < 2; ++master)
+            for (int mode = 1; mode <= 3; ++mode) {
+                host_properties_reset();
+                probe_clear();
+                const char* gate = master ? "persist.clarifae.enabled" :
+                    output ? "persist.clarifae.out_enabled" : "persist.clarifae.in_enabled";
+                const char* modes[] = {"1", "2", "3"};
+                host_property_set(gate, "0");
+                host_property_set("persist.clarifae.mode", modes[mode - 1]);
+                host_property_set("persist.clarifae.strength", "25");
+                host_property_set("persist.clarifae.out_strength", "75");
+                effect_handle_t h = create(output);
+                no_backend_work();
+                CHECK(status_cmd(h, EFFECT_CMD_INIT, NULL, 0) == 0);
+                no_backend_work();
+                effect_config_t c = config(1, 0);
+                CHECK(status_cmd(h, EFFECT_CMD_SET_CONFIG, &c, sizeof(c)) == 0);
+                no_backend_work();
+                CHECK((*h)->command(h, EFFECT_CMD_RESET, 0, NULL, NULL, NULL) == 0);
+                no_backend_work();
+                CHECK(status_cmd(h, EFFECT_CMD_ENABLE, NULL, 0) == 0);
+                no_backend_work();
+                float in[8], out[8];
+                for (int i = 0; i < 8; ++i) in[i] = 0.25f;
+                CHECK(process_float(h, in, out, 8) == 0 && !memcmp(in, out, sizeof(in)));
+                no_backend_work();
+                /* Unrelated controls and mode writes while off cannot initialize DSP. */
+                host_property_set("persist.clarifae.highpass", "0");
+                host_property_set("persist.clarifae.mode", modes[(mode + 1) % 3]);
+                CHECK(process_float(h, in, out, 8) == 0);
+                no_backend_work();
+                CHECK(status_cmd(h, EFFECT_CMD_DISABLE, NULL, 0) == 0);
+                CHECK(process_float(h, in, out, 8) == -ENODATA);
+                no_backend_work();
+                CHECK(status_cmd(h, EFFECT_CMD_SET_CONFIG, &c, sizeof(c)) == 0);
+                CHECK((*h)->command(h, EFFECT_CMD_RESET, 0, NULL, NULL, NULL) == 0);
+                CHECK(status_cmd(h, EFFECT_CMD_INIT, NULL, 0) == 0);
+                CHECK(status_cmd(h, EFFECT_CMD_ENABLE, NULL, 0) == 0);
+                no_backend_work();
+                int wanted = (mode + 1) % 3 + 1;
+                host_property_set(gate, "1");
+                CHECK(process_float(h, in, out, 8) == 0);
+                CHECK(out[0] == (output ? 0.1875f : 0.0625f));
+                CHECK(probe_metrics.creates[wanted] == 1 && probe_metrics.last_mode == wanted);
+                /* An existing state flushes once on bypass; selecting a mode while
+                 * disabled must not consume its activation when reenabled. */
+                host_property_set(gate, "0");
+                unsigned lookups = probe_metrics.lookups, calls = probe_metrics.processes;
+                CHECK(process_float(h, in, out, 8) == 0 && out[0] == in[0]);
+                CHECK(probe_metrics.resets == 1 && probe_metrics.lookups == lookups);
+                int next = wanted % 3 + 1;
+                host_property_set("persist.clarifae.mode", modes[next - 1]);
+                CHECK(process_float(h, in, out, 8) == 0);
+                CHECK(probe_metrics.resets == 1 && probe_metrics.lookups == lookups &&
+                      probe_metrics.processes == calls && probe_metrics.creates[next] == 0);
+                host_property_set(gate, "1");
+                CHECK(process_float(h, in, out, 8) == 0);
+                CHECK(probe_metrics.last_mode == next && probe_metrics.creates[next] == 1);
+                CHECK(AELI.release_effect(h) == 0);
+            }
+    /* Deliberately retain legacy prewarming when only the host is disabled. */
+    host_properties_reset();
+    probe_clear();
+    effect_handle_t h = create(1);
+    effect_config_t c = config(1, 0);
+    CHECK(status_cmd(h, EFFECT_CMD_SET_CONFIG, &c, sizeof(c)) == 0);
+    CHECK(probe_metrics.lookups > 0 && probe_metrics.creates[1] == 1);
+    CHECK(AELI.release_effect(h) == 0);
+}
+static void microphone_controls(void) {
+    for (int mode = 1; mode <= 3; ++mode) {
+        host_properties_reset();
+        probe_clear();
+        const char* modes[] = {"1", "2", "3"};
+        host_property_set("persist.clarifae.mode", modes[mode - 1]);
+        host_property_set("persist.clarifae.strength", "25");
+        host_property_set("persist.clarifae.out_strength", "75");
+        effect_handle_t capture = create(0), playback = create(1);
+        setup(capture, 1, 0);
+        setup(playback, 1, 0);
+        float in[8] = {0.25f}, out[8];
+        for (int hp = 0; hp < 2; ++hp)
+            for (int agc = 0; agc < 2; ++agc) {
+                host_property_set("persist.clarifae.highpass", hp ? "1" : "0");
+                host_property_set("persist.clarifae.autogain", agc ? "1" : "0");
+                CHECK(process_float(capture, in, out, 8) == 0 && out[0] == 0.0625f);
+                CHECK(probe_metrics.last_highpass == hp && probe_metrics.last_autogain == agc);
+                CHECK(probe_metrics.last_mode == mode && probe_metrics.last_strength == 0.25f);
+                CHECK(process_float(playback, in, out, 8) == 0 && out[0] == 0.1875f);
+                CHECK(probe_metrics.last_highpass == 0 && probe_metrics.last_autogain == 0);
+                CHECK(probe_metrics.last_mode == mode && probe_metrics.last_strength == 0.75f);
+            }
+        host_property_set("persist.clarifae.in_enabled", "0");
+        CHECK(process_float(playback, in, out, 8) == 0 && out[0] == 0.1875f);
+        CHECK(AELI.release_effect(capture) == 0 && AELI.release_effect(playback) == 0);
+    }
+}
+static void creation_failure(void) {
+    for (int output = 0; output < 2; ++output) {
+        host_properties_reset();
+        probe_clear();
+        host_property_set("persist.clarifae.mode", "2");
+        probe_fault = PROBE_CREATE_ERROR;
+        effect_handle_t h = create(output);
+        effect_config_t c = config(1, 0);
+        CHECK(status_cmd(h, EFFECT_CMD_SET_CONFIG, &c, sizeof(c)) == (output ? 0 : -ENODEV));
+        CHECK(probe_metrics.create_attempts[2] == 1 && probe_metrics.create_attempts[1] == 1);
+        CHECK(status_cmd(h, EFFECT_CMD_ENABLE, NULL, 0) == 0);
+        float in[8] = {0.25f}, out[8];
+        CHECK(process_float(h, in, out, 8) == (output ? 0 : -EINVAL));
+        CHECK(probe_metrics.processes == 0);
+        if (output) {
+            CHECK(!memcmp(in, out, sizeof(in)));
+            /* A later property refresh retries synchronously, not on a worker. */
+            probe_fault = PROBE_OK;
+            host_property_set("persist.clarifae.out_strength", "75");
+            CHECK(process_float(h, in, out, 8) == 0 && out[0] == 0.1875f);
+            CHECK(probe_metrics.last_mode == 2 && probe_metrics.creates[2] == 1);
+        }
+        CHECK(AELI.release_effect(h) == 0);
+    }
+}
+
 int main(void) {
     interleavings();
     float_safety();
     integer_safety();
     configuration();
+    disabled_lifecycle();
+    microphone_controls();
+    creation_failure();
     printf("PASS effect contract/fault injection checks=%u\n", checks);
     return 0;
 }

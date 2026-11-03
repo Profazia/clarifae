@@ -38,14 +38,22 @@ or proof of system-wide denoising. No new recordings are needed or produced.
   successful NS parameter response. This is not a complete Android NS parameter
   implementation. DISABLE flushes state and returns -ENODATA while copying valid
   input. Property bypass copies valid input without claiming the host disabled it.
-- Normalized float input must be finite and in [-1, 1], including bypass. Backend
-  errors/nonfinite output are rejected before writing that chunk. Integer output
-  is clamped before rounding/conversion, including huge finite backend values.
-  PCM16 accumulation saturates; float accumulation adds to a finite destination
-  and can exceed unity, as expected for a mix buffer.
+- Capture float input remains strictly finite and normalized to [-1, 1], including
+  bypass; invalid input/destinations and backend errors/nonfinite output return an
+  error before writing that chunk. Playback instead always fills valid configured
+  output buffers: finite dry mixer headroom above unity is preserved, nonfinite
+  input samples and accumulation destinations are locally treated as zero, and
+  float accumulation saturates only at +/-FLT_MAX, not unity. The backend receives
+  a separate normalized copy (clamped to [-1, 1] before int16-scale conversion).
+  Successful wet output remains normalized; dry headroom is not a claim about wet
+  processing. A playback backend error or any nonfinite result discards the whole
+  affected chunk's scratch, flushes the failed state and delivers original dry
+  input, also in-place/accumulating and across later chunks. Failed DSP does not
+  advance processed_frames. PCM16 accumulation saturates; all integer output is
+  clamped before rounding/conversion, including huge finite backend values.
 - The wrapper splits large callbacks into at most 2048 frames. Scratch is reserved
   during configuration, not resized in the steady-state processing path. An error
-  in a later chunk does not undo already processed earlier chunks.
+  in a later capture chunk does not undo already processed earlier chunks.
 
 The ABI values/layouts follow AOSP's
 [hardware/audio_effect.h](https://android.googlesource.com/platform/hardware/libhardware/+/refs/heads/main/include_all/hardware/audio_effect.h),
@@ -63,6 +71,24 @@ transaction across multiple properties. The shared diagnostic log level is atomi
 Only the existing persist.clarifae.* keys are used; there are no vendor aliases.
 As before, the host must serialize command/process/lifetime operations on a given
 instance; atomic logging is not a general per-instance concurrency mechanism.
+
+Fresh master-off or side-off lifecycles perform **zero backend lookup, create or
+reset** through creation, INIT, SET_CONFIG, RESET, ENABLE/DISABLE and process.
+Format configuration and bounded scratch allocation still occur. A previously
+active instance still flushes its existing state on bypass; explicit RESET/INIT
+may reset an existing backend. This is a narrow initialization gate, not a worker
+or a zero-allocation lifecycle. Host-disabled alone deliberately retains legacy
+SET_CONFIG prewarming; it is not covered by the zero-initialization guarantee.
+Mode changes observed while off are activated after reenable using the last built
+mode rather than just the last observed property value. Playback format setup
+remains usable for dry output if all backend creation attempts fail; capture keeps
+the setup error. Playback retries creation on the next configuration/property
+refresh, not repeatedly on every unchanged callback.
+
+The highpass/autogain properties are microphone controls: capture still receives
+their values, while playback always passes HP=0/AGC=0 to its backend. Playback
+out_strength and side enable remain independent of input strength/enable. No new
+output filter properties, UI/routing changes or device integration are provided.
 
 Live legacy mode semantics are retained: selecting a different available backend
 can destroy/create its state on the process thread. Optional backend/model setup,
@@ -113,7 +139,9 @@ sources do not inherit -Werror.
 - effect_smoke dynamically loads a host test library, checks both descriptors,
   masked config/readback and malformed buffers, PCM16/float mono/stereo at
   8/44.1/48/96/192 kHz, large callbacks, bit-exact disabled copies, stale-state
-  flushing and deterministic noise processing. Its timing is host-only.
+  flushing and deterministic noise processing. Genuine RNNoise playback output
+  is bit-identical across all four microphone HP/AGC combinations. Its timing is
+  host-only.
 - backend_pipeline checks bit-identical fixed/irregular partitions at
   8/16/44.1/48/96/192 kHz (mono/stereo, 0/50% wet), reset-versus-fresh equality,
   aligned dry delay, direct/wrapped impulse delay and nonzero filter tails.
@@ -122,8 +150,19 @@ sources do not inherit -Werror.
   termination, atomic log-level access and a controlled load/disable interleaving.
 - effect_contract uses an explicitly fake backend to test per-instance updates,
   construction/configuration interleavings, immediate 2→3→2 mode activation,
-  provider rejection, finite/range checks and NaN/Inf/error/huge-output injection.
-  It does not claim to test real optional runtimes.
+  provider rejection, strict capture finite/range/error behavior, fresh disabled
+  lifecycle zero-work assertions for both sides/all three fake modes, delayed mode
+  activation after reenable, creation failures, and microphone/playback parameter
+  isolation. It does not claim to test real optional runtimes.
+- output_matrix uses the fake backend for PCM16/float WRITE/ACCUMULATE, exact
+  alias/separate buffers, host enabled/disabled, master/side bypass, 1/17/192/480/
+  2048/2049/4096-frame callbacks and 1/2/8-channel float output. It asserts complete
+  finite delivery, dry headroom and signed-zero preservation, saturation without
+  float overflow, local input/destination repair, normalized backend input, guard
+  sentinels and unchanged separate input. Error/NaN/Inf/huge finite fault cases
+  include a second-chunk-only fault and successful-DSP counter checks. An extra
+  sweep covers every callback length from 1 through 4096, rotating access, alias
+  and fake fault combinations.
 
 The host-only property store, logging shim and NULL optional-backend stubs live
 under tests/host-stubs and are never included by the Android build. They cannot

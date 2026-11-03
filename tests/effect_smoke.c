@@ -152,6 +152,41 @@ static void synthetic_noise(audio_effect_library_t* lib, const effect_uuid_t* id
            total / 300, maximum);
     CHECK(lib->release_effect(h) == 0);
 }
+static void playback_microphone_controls(audio_effect_library_t* lib, void* so) {
+    void (*set)(const char*, const char*) = dlsym(so, "host_property_set");
+    void (*clear)(void) = dlsym(so, "host_properties_reset");
+    CHECK(set && clear); /* Explicit host-only API stubs, not Android exports. */
+    const size_t frames = 480, blocks = 32;
+    float* baseline = malloc(frames * blocks * sizeof(*baseline));
+    CHECK(baseline);
+    for (int hp = 0; hp < 2; ++hp)
+        for (int agc = 0; agc < 2; ++agc) {
+            clear();
+            set("persist.clarifae.highpass", hp ? "1" : "0");
+            set("persist.clarifae.autogain", agc ? "1" : "0");
+            set("persist.clarifae.loglevel", "0");
+            effect_uuid_t id = CLARIFAE_OUT_IMPL_UUID;
+            effect_handle_t h = NULL;
+            CHECK(lib->create_effect(&id, 0, 0, &h) == 0);
+            effect_config_t e = config(48000, 1, 1, 1);
+            CHECK(status_cmd(h, EFFECT_CMD_SET_CONFIG, &e, sizeof(e)) == 0);
+            CHECK(status_cmd(h, EFFECT_CMD_ENABLE, NULL, 0) == 0);
+            float in[480], out[480];
+            for (size_t block = 0; block < blocks; ++block) {
+                for (size_t i = 0; i < frames; ++i)
+                    in[i] = 0.2f + 0.1f * sinf((float)(block * frames + i) * 0.03f);
+                audio_buffer_t ib = {.frameCount = frames, .f32 = in};
+                audio_buffer_t ob = {.frameCount = frames, .f32 = out};
+                CHECK((*h)->process(h, &ib, &ob) == 0);
+                if (!hp && !agc) memcpy(baseline + block * frames, out, sizeof(out));
+                else CHECK(!memcmp(baseline + block * frames, out, sizeof(out)));
+            }
+            CHECK(lib->release_effect(h) == 0);
+        }
+    clear();
+    free(baseline);
+}
+
 int main(int argc, char** argv) {
     CHECK(argc == 2);
     void* so = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -169,6 +204,7 @@ int main(int argc, char** argv) {
     for (int side = 0; side < 2; ++side)
         matrix(lib, &ids[side], side);
     synthetic_noise(lib, &ids[0]);
+    playback_microphone_controls(lib, so);
     CHECK(lib->release_effect(NULL) == -EINVAL);
     CHECK(dlclose(so) == 0);
     printf("PASS AELI synthetic smoke checks=%u\n", checks);

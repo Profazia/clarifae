@@ -20,6 +20,7 @@ rm -f "$OUT"
 # live alongside the module in the same folder.
 ( cd "$MOD" && zip -r9 "$OUT" . \
     -x 'native/*' \
+    -x 'tests/*' \
     -x 'build/*' \
     -x 'scripts/*' \
     -x 'build.sh' \
