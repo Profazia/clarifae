@@ -12,3 +12,5 @@ python3 "$HERE/tests/test_transactions.py"
 python3 "$HERE/tests/test_safety.py"
 python3 "$HERE/tests/test_integration.py"
 node --test "$HERE/tests/test_ui.cjs"
+
+python3 "$HERE/tests/test_fdinfo.py"

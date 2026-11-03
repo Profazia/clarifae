@@ -23,8 +23,18 @@ need(){
 mid(){
  # fdinfo identifies the VISIBLE mount, not the last textual mountinfo row.
  exec 9< "$1" || return 1
- _mid_id=$(awk '$1=="mnt_id:"{id=$2;n++}END{if(n!=1)exit 1;print id}' /proc/self/fdinfo/9) || { exec 9<&-;return 1; }
+ # Android mksh may close fd9 in an exec child. Parse this shell's
+ # fdinfo with builtins before closing it; an external awk would see its
+ # own (closed) descriptor instead of the shell-held visible mount.
+ _mid_id=;_mid_count=0;_mid_bad=0
+ while read -r _mid_key _mid_value _mid_tail;do
+  if [ "$_mid_key" = mnt_id: ];then
+   _mid_count=$((_mid_count+1));_mid_id=$_mid_value
+   [ -z "$_mid_tail" ] || _mid_bad=1
+  fi
+ done < /proc/self/fdinfo/9 || { exec 9<&-;return 1; }
  exec 9<&-
+ [ "$_mid_count" = 1 ] && [ "$_mid_bad" = 0 ] || return 1
  positive_id "$_mid_id" || return 1
  awk -v id="$_mid_id" -v p="$1" '$1==id&&$5==p{n++}END{exit n!=1}' /proc/1/mountinfo || return 1
  printf '%s' "$_mid_id"
