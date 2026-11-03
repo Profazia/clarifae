@@ -46,6 +46,11 @@ static void close_pair(audio_hw_device_t*d,audio_stream_in_t*s){d->close_input_s
 static char* dump_device(audio_hw_device_t*d) {
  FILE*f=tmpfile();CHECK(f);CHECK(d->dump(d,fileno(f))==0);CHECK(!fflush(f));CHECK(!fseek(f,0,SEEK_END));long size=ftell(f);CHECK(size>=0);CHECK(!fseek(f,0,SEEK_SET));char*out=calloc(1,(size_t)size+1);CHECK(out);CHECK(fread(out,1,(size_t)size,f)==(size_t)size);fclose(f);return out;
 }
+/* Await real inference and finish the live dry entry window before wet assertions. */
+static void await_async(audio_stream_in_t*s) {
+ int16_t pcm[480];
+ for(int i=0;i<25;i++){CHECK(s->read(s,pcm,sizeof(pcm))==(ssize_t)sizeof(pcm));usleep(2000);}
+}
 static double seconds(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
 static void test_bypass(int source,unsigned flags,unsigned rate,unsigned mask,unsigned format) {
  p_fake_reset();p_fake_set_config(rate,mask,format);audio_hw_device_t*d=open_device();audio_stream_in_t*s=open_stream(d,source,flags);
@@ -67,11 +72,18 @@ int main(int argc,char**argv) {
  p_fake_reset();p_fake_set_open_device_result(-EIO);hw_device_t*bad=NULL;CHECK(mod->methods->open(mod,AUDIO_HARDWARE_INTERFACE,&bad)==-EIO);CHECK(!bad);
  p_fake_reset();audio_hw_device_t*d=open_device();p_fake_set_open_input_result(-EAGAIN);audio_stream_in_t*s=NULL;
  CHECK(d->open_input_stream(d,4,0x80000004u,NULL,&s,0,"forwarded",7)==-EAGAIN);CHECK(!s);CHECK(d->common.close(&d->common)==0);
- p_fake_reset();if(!strcmp(scenario,"nan")||!strcmp(scenario,"range"))p_fake_set_config(48000,0x10,5);d=open_device();s=open_stream(d,1,0);
+ /* Processing/fault fixtures begin enabled. A disabled open now deliberately
+  * creates no DSP; hot enable is prepared asynchronously by the control worker. */
+ set_enabled(1);p_fake_reset();if(!strcmp(scenario,"nan")||!strcmp(scenario,"range"))p_fake_set_config(48000,0x10,5);d=open_device();s=open_stream(d,1,0);
  CHECK(d->common.close(&d->common)==-EBUSY);
+ if(!strcmp(scenario,"normal"))await_async(s);
  unsigned char raw[960+32],out[960+32];memset(raw,0xa5,sizeof(raw));memset(out,0xa5,sizeof(out));set_enabled(0);
  CHECK(p_fake_rewind_stream(s,FAKE_DEFAULT_SEED)==0);CHECK(s->read(s,raw+16,960)==960);
- CHECK(p_fake_rewind_stream(s,FAKE_DEFAULT_SEED)==0);set_enabled(1);CHECK(s->read(s,out+16,960)==960);
+ if(!strcmp(scenario,"normal")) {
+  char*disabled=dump_device(d);CHECK(strstr(disabled,"adapter=0"));
+  CHECK(strstr(disabled,"bypass_reason=adapter_off"));free(disabled);
+ }
+ CHECK(p_fake_rewind_stream(s,FAKE_DEFAULT_SEED)==0);set_enabled(1);if(!strcmp(scenario,"normal"))await_async(s);CHECK(p_fake_rewind_stream(s,FAKE_DEFAULT_SEED)==0);CHECK(s->read(s,out+16,960)==960);
  if(strcmp(scenario,"normal")) {
   CHECK(!memcmp(raw,out,sizeof(raw)));
   CHECK(p_fake_rewind_stream(s,FAKE_DEFAULT_SEED)==0);memset(out,0xa5,sizeof(out));CHECK(s->read(s,out+16,960)==960);CHECK(!memcmp(raw,out,sizeof(raw)));
@@ -82,7 +94,7 @@ int main(int argc,char**argv) {
  /* Engine-off baseline and engine-on identical injected source, not a microphone. */
  CHECK(s->common.standby(&s->common)==0);CHECK(p_fake_rewind_stream(s,FAKE_DEFAULT_SEED)==0);set_enabled(0);double before=0,after=0,mean=0,max=0;
  int16_t pcm[480];for(int i=0;i<300;i++){CHECK(s->read(s,pcm,sizeof(pcm))==(ssize_t)sizeof(pcm));if(i>=100)for(int j=0;j<480;j++)before+=(double)pcm[j]*pcm[j];}
- CHECK(s->common.standby(&s->common)==0);CHECK(p_fake_rewind_stream(s,FAKE_DEFAULT_SEED)==0);set_enabled(1);
+ CHECK(s->common.standby(&s->common)==0);CHECK(p_fake_rewind_stream(s,FAKE_DEFAULT_SEED)==0);set_enabled(1);await_async(s);
  for(int i=0;i<300;i++){double t=seconds();CHECK(s->read(s,pcm,sizeof(pcm))==(ssize_t)sizeof(pcm));t=(seconds()-t)*1e3;mean+=t;if(t>max)max=t;if(i>=100)for(int j=0;j<480;j++){after+=(double)pcm[j]*pcm[j];CHECK(pcm[j]!=32767&&pcm[j]!=-32768);}}
  double db=10*log10(before/after);CHECK(isfinite(db)&&db>3);printf("injected_noise_reduction_db=%.3f bridge_read_mean_ms=%.3f max_ms=%.3f\n",db,mean/300,max);
  char*text=dump_device(d);CHECK(strstr(text,"processed_frames=")&&strstr(text,"strength=67"));puts(text);free(text);

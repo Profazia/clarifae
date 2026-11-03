@@ -57,6 +57,7 @@ struct stream_ctx {
  unsigned char* backup;
  _Atomic bool reset_pending;
  bool failed;
+ bool effect_host_enabled;
  double energy_in_acc, energy_out_acc;
  _Atomic uint64_t reads, bytes, dsp_frames, bypass_frames, errors;
  _Atomic uint64_t energy_in_bits, energy_out_bits;
@@ -69,8 +70,8 @@ struct stream_ctx {
 static pthread_mutex_t registry=PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t device_lifecycle=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t released=PTHREAD_COND_INITIALIZER;
-static pthread_cond_t control_changed=PTHREAD_COND_INITIALIZER;
-static pthread_once_t control_once=PTHREAD_ONCE_INIT;
+
+
 static _Atomic int control_ready;
 static _Atomic uint64_t mode_reconfigurations;
 static _Atomic uint64_t frames_by_mode[4];
@@ -193,14 +194,6 @@ static int effect_status(effect_handle_t effect,uint32_t cmd,void* data,uint32_t
  int rc=(*effect)->command(effect,cmd,bytes,data,&size,&status);
  return rc?rc:(size==sizeof(status)?status:-EINVAL);
 }
-static int desired_mode(void) {
-#ifdef CLF_BRIDGE_TESTING
- return atomic_load(&test_mode);
-#else
- char value[PROP_VALUE_MAX];if(__system_property_get("persist.vendor.audio.clarifae.mode",value)<=0)return 0;
- char*end=NULL;long mode=strtol(value,&end,10);return end!=value&&!*end&&mode>=1&&mode<=3?(int)mode:0;
-#endif
-}
 static int read_effect_stats(effect_handle_t effect,clarifae_private_stats_t* stats) {
  uint32_t size=sizeof(*stats);memset(stats,0,sizeof(*stats));
  if(!effect || (*effect)->command(effect,CLF_CMD_GET_STATS,0,NULL,&size,stats) || size!=sizeof(*stats) || stats->size!=sizeof(*stats) || stats->version!=CLF_STATS_VERSION)return -EINVAL;
@@ -224,56 +217,17 @@ static effect_handle_t build_effect(stream_ctx*s,clarifae_private_stats_t*stats)
  cfg.inputCfg.format=cfg.outputCfg.format=(uint8_t)s->format;
  cfg.inputCfg.accessMode=EFFECT_BUFFER_ACCESS_READ;cfg.outputCfg.accessMode=EFFECT_BUFFER_ACCESS_WRITE;
  cfg.inputCfg.mask=cfg.outputCfg.mask=EFFECT_CONFIG_ALL;
- if(effect_status(effect,EFFECT_CMD_INIT,NULL,0) || effect_status(effect,EFFECT_CMD_SET_CONFIG,&cfg,sizeof(cfg)) || effect_status(effect,EFFECT_CMD_ENABLE,NULL,0) || read_effect_stats(effect,stats)) {
+ if(effect_status(effect,EFFECT_CMD_INIT,NULL,0) || effect_status(effect,EFFECT_CMD_SET_CONFIG,&cfg,sizeof(cfg)) ||
+    ((adapter_enabled() && source_selected(atomic_load(&s->source))) && effect_status(effect,EFFECT_CMD_ENABLE,NULL,0)) || read_effect_stats(effect,stats)) {
   engine->release_effect(effect);LOGW("capture engine initialization failed; passthrough");return NULL;
  }
  return effect;
 }
+/* The effect owns asynchronous construction and reset for both directions.
+ * No wrapper job pins capture lifetime while a model is being built. */
 static void prepare_engine(stream_ctx*s) {
  clarifae_private_stats_t stats;s->effect=build_effect(s,&stats);
- int requested=desired_mode();
- if(s->effect){cache_stats(s,&stats);requested=stats.requested_mode;}
- atomic_store(&s->attempted_mode,requested);
-}
-static uint64_t monotonic_ns(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec;}
-static void* control_worker(void*unused) {
- (void)unused;
-#ifdef __ANDROID__
- pthread_setname_np(pthread_self(),"ClfCaptureCtl");
-#endif
- for(;;) {
-  struct timespec until;clock_gettime(CLOCK_REALTIME,&until);until.tv_nsec+=200000000;
-  if(until.tv_nsec>=1000000000){until.tv_sec++;until.tv_nsec-=1000000000;}
-  pthread_mutex_lock(&registry);pthread_cond_timedwait(&control_changed,&registry,&until);pthread_mutex_unlock(&registry);
-  int wanted=desired_mode();if(wanted<1||wanted>3||!adapter_enabled())continue;
-  stream_ctx* jobs[MAX_STREAMS];int count=0;uint64_t now=monotonic_ns();
-  pthread_mutex_lock(&registry);
-  for(int i=0;i<MAX_STREAMS;i++)if(streams[i]&&!streams[i]->closing&&now>=atomic_load(&streams[i]->retry_after_ns)&&(atomic_load(&streams[i]->attempted_mode)!=wanted || atomic_load(&streams[i]->reset_generation)!=atomic_load(&streams[i]->applied_reset_generation))){jobs[count]=streams[i];jobs[count++]->refs++;}
-  pthread_mutex_unlock(&registry);
-  for(int i=0;i<count;i++) {
-   stream_ctx*current=jobs[i];
-   uint64_t reset_epoch=atomic_load(&current->reset_generation);
-   clarifae_private_stats_t stats;effect_handle_t next=build_effect(current,&stats);
-   if(!next){atomic_store(&current->attempted_mode,-1);atomic_store(&current->retry_after_ns,monotonic_ns()+2000000000ull);unpin_stream(current);continue;}
-   pthread_mutex_lock(&current->io);
-   pthread_mutex_lock(&registry);bool closing=current->closing;pthread_mutex_unlock(&registry);
-   effect_handle_t old=NULL;
-   if(!closing && desired_mode()==wanted && stats.requested_mode==wanted && atomic_load(&current->reset_generation)==reset_epoch) {
-    old=current->effect;current->effect=next;next=NULL;current->failed=false;current->reset_pending=false;
-    cache_stats(current,&stats);atomic_store(&current->attempted_mode,wanted);atomic_store(&current->retry_after_ns,0);atomic_store(&current->applied_reset_generation,reset_epoch);current->slow_calls=0;atomic_fetch_add(&mode_reconfigurations,1);
-    LOGI("mode activated io=%d requested=%d active=%d strength=%d off_thread=1",current->handle,wanted,stats.mode,stats.strength);
-   } else {atomic_store(&current->attempted_mode,-1);atomic_store(&current->retry_after_ns,0);}
-   pthread_mutex_unlock(&current->io);
-   /* Interpreter/model construction and destruction never run in read(). */
-   if(old)engine->release_effect(old);if(next)engine->release_effect(next);
-   unpin_stream(current);
-  }
- }
- return NULL;
-}
-static void start_control_worker(void) {
- pthread_t thread;int rc=pthread_create(&thread,NULL,control_worker,NULL);
- if(!rc){pthread_detach(thread);atomic_store(&control_ready,1);}else LOGW("mode worker unavailable (%d); mode applies on capture reopen",rc);
+ if(s->effect){cache_stats(s,&stats);s->effect_host_enabled=stats.host_enabled!=0;}
 }
 static void reset_engine(stream_ctx* s) {
  if(s->effect)(*s->effect)->command(s->effect,EFFECT_CMD_RESET,0,NULL,NULL,NULL);
@@ -323,14 +277,14 @@ static ssize_t bridge_read(struct audio_stream_in* stream,void* buffer,size_t by
  bool ready=reason==0;
  if(ready && s->format==AUDIO_FORMAT_PCM_FLOAT){const float*p=buffer;for(size_t i=0;i<(size_t)got/4;i++)if(!isfinite(p[i])||fabsf(p[i])>1.0f){ready=false;reason=8;break;}}
  atomic_store(&s->bypass_reason,reason);
- if(!ready){if(reason==4 && buffer && (size_t)got<=bytes)memset(buffer,0,(size_t)got);s->reset_pending=true;atomic_fetch_add(&s->bypass_frames,(uint64_t)got/frame_bytes);goto done;}
- if(atomic_exchange(&s->reset_pending,false)){
-  if(atomic_load(&s->mode)==3){atomic_fetch_add(&s->reset_generation,1);pthread_cond_signal(&control_changed);}
-  else reset_engine(s);
+ if(!ready){
+  if(s->effect && s->effect_host_enabled && !effect_status(s->effect,EFFECT_CMD_DISABLE,NULL,0))s->effect_host_enabled=false;
+  if(reason==4 && buffer && (size_t)got<=bytes)memset(buffer,0,(size_t)got);s->reset_pending=true;atomic_fetch_add(&s->bypass_frames,(uint64_t)got/frame_bytes);goto done;}
+ if(!s->effect_host_enabled){
+  if(effect_status(s->effect,EFFECT_CMD_ENABLE,NULL,0)){atomic_store(&s->bypass_reason,5);atomic_fetch_add(&s->bypass_frames,(uint64_t)got/frame_bytes);goto done;}
+  s->effect_host_enabled=true;s->reset_pending=false;
  }
- if(atomic_load(&s->reset_generation)!=atomic_load(&s->applied_reset_generation)){
-  atomic_store(&s->bypass_reason,13);atomic_fetch_add(&s->bypass_frames,(uint64_t)got/frame_bytes);goto done;
- }
+ if(atomic_exchange(&s->reset_pending,false))reset_engine(s);
  memcpy(s->backup,buffer,(size_t)got);
  clarifae_private_stats_t before,after;
  if(effect_stats(s,&before))goto failed;
@@ -345,12 +299,13 @@ static ssize_t bridge_read(struct audio_stream_in* stream,void* buffer,size_t by
  uint64_t budget=in.frameCount*1000000000ull/s->rate;
  if(elapsed>budget)atomic_fetch_add(&s->deadline_overruns,1);
  if(elapsed>budget*2)s->slow_calls++;else s->slow_calls=0;
- if(process_result==-EAGAIN){memcpy(buffer,s->backup,(size_t)got);atomic_fetch_add(&s->reset_generation,1);atomic_store(&s->bypass_reason,13);atomic_fetch_add(&s->bypass_frames,in.frameCount);pthread_cond_signal(&control_changed);goto done;}
+ if(process_result==-EAGAIN){memcpy(buffer,s->backup,(size_t)got);atomic_store(&s->bypass_reason,13);atomic_fetch_add(&s->bypass_frames,in.frameCount);goto done;}
  if(process_result || s->slow_calls>=3 || effect_stats(s,&after))goto failed;
  if(s->format==AUDIO_FORMAT_PCM_FLOAT){const float*values=buffer;for(size_t i=0;i<(size_t)got/4;i++)if(!isfinite(values[i]) || fabsf(values[i])>1.0f)goto failed;}
  uint64_t processed=after.processed_frames>=before.processed_frames?after.processed_frames-before.processed_frames:after.processed_frames;
  if(processed) {
   uint64_t previous=atomic_fetch_add(&s->dsp_frames,processed);atomic_fetch_add(&total_dsp_frames,processed);
+  if(after.mode!=before.mode)atomic_fetch_add(&mode_reconfigurations,1);
   if(after.mode>=1&&after.mode<=3)atomic_fetch_add(&frames_by_mode[after.mode],processed);
   s->energy_in_acc+=energy(s->backup,(size_t)got,s->format);s->energy_out_acc+=energy(buffer,(size_t)got,s->format);
   atomic_store(&s->energy_in_bits,double_bits(s->energy_in_acc));atomic_store(&s->energy_out_bits,double_bits(s->energy_out_acc));
@@ -412,7 +367,7 @@ static int bridge_device_dump(const struct audio_hw_device* dev,int fd) {
  device_ctx*d=pin_device(dev);if(!d)return -ENODEV;
  int rc=d->dump?d->dump(dev,fd):0;
  char output[11000];size_t used=0;
- int n=snprintf(output,sizeof(output),"\nClarifaeCaptureBridge version=2 adapter=%d control_worker=%d mode_reconfigurations=%"PRIu64" opened=%"PRIu64" closed=%"PRIu64" reads=%"PRIu64" bytes=%"PRIu64" processed_frames=%"PRIu64" errors=%"PRIu64" skipped_opens=%"PRIu64"\nClarifaeCaptureBridge rnnoise_frames=%"PRIu64" dtln_frames=%"PRIu64" deepfilternet_frames=%"PRIu64"\n",
+ int n=snprintf(output,sizeof(output),"\nClarifaeCaptureBridge version=3 adapter=%d async_engine=%d mode_reconfigurations=%"PRIu64" opened=%"PRIu64" closed=%"PRIu64" reads=%"PRIu64" bytes=%"PRIu64" processed_frames=%"PRIu64" errors=%"PRIu64" skipped_opens=%"PRIu64"\nClarifaeCaptureBridge rnnoise_frames=%"PRIu64" dtln_frames=%"PRIu64" deepfilternet_frames=%"PRIu64"\n",
   adapter_enabled(),atomic_load(&control_ready),atomic_load(&mode_reconfigurations),atomic_load(&total_opens),atomic_load(&total_closed),atomic_load(&total_reads),atomic_load(&total_bytes),atomic_load(&total_dsp_frames),atomic_load(&total_errors),atomic_load(&skipped_opens),atomic_load(&frames_by_mode[1]),atomic_load(&frames_by_mode[2]),atomic_load(&frames_by_mode[3]));
  if(n>0)used=(size_t)n<sizeof(output)?(size_t)n:sizeof(output)-1;
  stream_ctx* live[MAX_STREAMS];int count=0;char last[512];
@@ -447,9 +402,10 @@ static int bridge_open_input(struct audio_hw_device* dev,audio_io_handle_t handl
  pthread_mutexattr_t attr;pthread_mutexattr_init(&attr);pthread_mutexattr_settype(&attr,PTHREAD_MUTEX_RECURSIVE);pthread_mutex_init(&s->io,&attr);pthread_mutexattr_destroy(&attr);
  s->stream=in;s->owner=d;s->read=in->read;s->standby=in->common.standby;s->dump=in->common.dump;s->set_parameters=in->common.set_parameters;
  s->rate=rate;s->mask=mask;s->channels=ch;s->format=format;s->flags=flags;s->handle=handle;atomic_store(&s->source,source);s->reset_pending=true;
- prepare_engine(s);if(s->effect)s->reset_pending=false;
+ prepare_engine(s);
+ if(s->effect)s->reset_pending=false;
  pthread_mutex_lock(&registry);int slot=-1;for(int i=0;i<MAX_STREAMS;i++)if(!streams[i]){slot=i;break;}
- if(slot>=0){streams[slot]=s;pthread_cond_broadcast(&control_changed);in->read=bridge_read;in->common.standby=bridge_standby;in->common.dump=bridge_stream_dump;in->common.set_parameters=bridge_set_parameters;}
+ if(slot>=0){streams[slot]=s;in->read=bridge_read;in->common.standby=bridge_standby;in->common.dump=bridge_stream_dump;in->common.set_parameters=bridge_set_parameters;}
  pthread_mutex_unlock(&registry);
  if(slot<0){destroy_stream(s);atomic_fetch_add(&skipped_opens,1);}else{atomic_fetch_add(&total_opens,1);LOGI("capture attached io=%d source=%d rate=%u ch=%u engine=%d adapter=%d",handle,source,rate,ch,s->effect!=NULL,adapter_enabled());}
  unpin_device(d);return rc;
@@ -515,7 +471,7 @@ static int bridge_open(const hw_module_t* module,const char* id,hw_device_t** re
  pthread_mutex_lock(&registry);int slot=-1;for(int i=0;i<MAX_DEVICES;i++)if(!devices[i]){slot=i;break;}
  if(slot>=0){devices[slot]=d;dev->open_input_stream=bridge_open_input;dev->close_input_stream=bridge_close_input;dev->dump=bridge_device_dump;dev->common.close=bridge_device_close;}
  pthread_mutex_unlock(&registry);
- if(slot<0)free(d);else {pthread_once(&control_once,start_control_worker);LOGI("stock device opened version=%x; passthrough gate adapter=%d",dev->common.version,adapter_enabled());}
+ if(slot<0)free(d);else {atomic_store(&control_ready,1);LOGI("stock device opened version=%x; passthrough gate adapter=%d",dev->common.version,adapter_enabled());}
  pthread_mutex_unlock(&device_lifecycle);return rc;
 }
 static hw_module_methods_t bridge_methods={.open=bridge_open};

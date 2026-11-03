@@ -10,6 +10,7 @@ if [ ! -f "${RNNOISE_DIR:-$ROOT/native/third_party/rnnoise}/src/rnnoise_data.c" 
 fi
 cmake -S "$HERE/engine" -B "$HERE/build-engine" -G Ninja \
  -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+ -DCMAKE_C_FLAGS="-Werror -mbranch-protection=standard" \
  -DCLARIFAE_ISOLATED_TEST_CONFIG=OFF -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 -DCMAKE_BUILD_TYPE=Release \
  -DRNNOISE_DIR="${RNNOISE_DIR:-$ROOT/native/third_party/rnnoise}"
 cmake --build "$HERE/build-engine" -j6
@@ -18,12 +19,12 @@ cmake --build "$HERE/build-engine" -j6
 cmake -S "$HERE/engine" -B "$HERE/build-isolated-engine" -G Ninja \
  -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 -DCMAKE_BUILD_TYPE=Release \
- -DRNNOISE_DIR="${RNNOISE_DIR:-$ROOT/native/third_party/rnnoise}" -DCMAKE_C_FLAGS= -DCLARIFAE_ISOLATED_TEST_CONFIG=ON
+ -DRNNOISE_DIR="${RNNOISE_DIR:-$ROOT/native/third_party/rnnoise}" -DCMAKE_C_FLAGS="-Werror -mbranch-protection=standard" -DCLARIFAE_ISOLATED_TEST_CONFIG=ON
 cmake --build "$HERE/build-isolated-engine" -j4
 "$TOOLBIN/llvm-strip" --strip-unneeded -o "$HERE/dist/libclarifae_isolated.so" "$HERE/build-isolated-engine/libclarifae.so"
 
 INCLUDES=(-I"$HERE/include" -I"$HERE/engine/include")
-FLAGS=(-std=gnu11 -O2 -g -mbranch-protection=standard -fPIC -fvisibility=hidden -Wall -Wextra -Werror -Wno-unused-parameter -Wl,-z,defs -Wl,-z,nodelete -Wl,-z,max-page-size=16384)
+FLAGS=(-std=gnu11 -O2 -g -mbranch-protection=standard -fPIC -fvisibility=hidden -Wall -Wextra -Werror -Wno-unused-parameter -Wl,-z,defs -Wl,-z,now -Wl,-z,nodelete -Wl,-z,max-page-size=16384)
 "$TOOLBIN/aarch64-linux-android26-clang" "${FLAGS[@]}" "${INCLUDES[@]}" -shared "$HERE/src/capture_bridge.c" \
  -Wl,-soname,libclarifae_capture_bridge.so -llog -ldl -lm -o "$HERE/dist/libclarifae_capture_bridge.so"
 "$TOOLBIN/aarch64-linux-android26-clang" "${FLAGS[@]}" "${INCLUDES[@]}" -DCLF_BRIDGE_TESTING -shared "$HERE/src/capture_bridge.c" \

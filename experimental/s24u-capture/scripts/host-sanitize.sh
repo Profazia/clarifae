@@ -9,7 +9,7 @@ CLANG=$(xcrun -f clang);SDK=$(xcrun --show-sdk-path)
 RNN="${RNNOISE_DIR:-$ROOT/native/third_party/rnnoise}"
 SOURCES=()
 for file in "$RNN"/src/*.c;do case "$file" in *dump_features*|*dump_rnnoise_tables*|*write_weights*)continue;;esac;SOURCES+=("$file");done
-FLAGS=(-isysroot "$SDK" -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer)
+FLAGS=(-isysroot "$SDK" -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
 INC=(-I"$HERE/include" -I"$HERE/engine/include")
 "$CLANG" "${FLAGS[@]}" -dynamiclib -DRNNOISE_BUILD -I"$HERE/tests/host-stubs" -I"$HERE/engine" -I"$HERE/engine/include" -I"$HERE/include" -I"$RNN/include" -I"$RNN/src" \
  "$HERE/engine/effect.c" "$HERE/engine/config.c" "$HERE/engine/ringbuf.c" "$HERE/engine/resampler.c" "$HERE/engine/backend_rnnoise.c" \

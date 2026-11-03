@@ -67,7 +67,7 @@ target_compile_options(clarifae PRIVATE
 target_compile_definitions(clarifae PRIVATE RNNOISE_BUILD)
 
 target_link_options(clarifae PRIVATE -Wl,--gc-sections -Wl,--exclude-libs,ALL
-    -Wl,-z,defs -Wl,-z,max-page-size=16384)
+    -Wl,-z,defs -Wl,-z,now -Wl,-z,nodelete -Wl,-z,max-page-size=16384)
 
 find_library(LOG_LIB log)
 target_link_libraries(clarifae ${LOG_LIB} m dl)

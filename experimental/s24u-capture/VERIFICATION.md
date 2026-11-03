@@ -2,7 +2,7 @@
 
 Upstream baseline: `505c0a9a5f1578ddea48eb30747dc15d2978b733` (v1.1.2). Original live integration was tested on an ARM64 SM-S928B / pineapple, Android 17 / SDK 37, primary device API 3.2. This is a single-device result, not a certification of other models/firmware. Aggregate metrics below omit private raw recordings and full phone dumps.
 
-## Established live results
+## Original established live results (31 October)
 
 | Test | Observed outcome |
 |---|---|
@@ -26,4 +26,29 @@ One DF capture cancelled on Activity pause as designed. Another fixed-delay comp
 - Actual Android DTLN models: isolated mono/stereo inference; host production-C DSP suite: 20 real-model tests under UBSan, reference maximum difference 0.001709 PCM16 units; partition/reset/channel independence.
 - Actual Android DF3 inference, malformed-model rejection, concurrent contexts, resets, impulse delay and all 16 supported rate/channel combinations were tested; pinned Rust/tract inference allocates and is not hard realtime. DF host ASan was unavailable; do not infer a DF ASan pass from bridge-only sanitizer coverage.
 
-Source-only relocation/build checks are recorded in the PR body. No fresh phone test is implied by a successful host rebuild. Review and broad firmware/route testing are still required before shipping an automatic integration.
+## 3 November source refresh and previously recorded device evidence
+
+This refresh republishes the canonical asynchronous engine/capture bridge, not a new device test. The source identity and previous deployed binary identities are recorded in [SOURCE_SNAPSHOT.md](SOURCE_SNAPSHOT.md). The output software INSERT role, bounded playback float delivery, independent output HP/AGC, engine-owned lifecycle worker, stale-generation rejection, observational stats and once-per-callback adoption supersede the older wrapper-owned mode-worker architecture. Raw audio is delivered while preparing a first backend; a compatible previous model can continue during a mode-only change. Worker zero priming plus 60 ms live dry/15 ms fade do not eliminate the 30–40 ms model delay.
+
+Previously recorded single-device evidence, **not rerun for this public refresh**:
+
+| Scope | Observed outcome and boundary |
+|---|---|
+| Async cold local communication-mode setup | DF capture construction 1,797→356 ms; playback play() 2,259→66 ms. Frame delivery improved, but these local call-mode captures were zero-valued even with master and adapter bypass. Not proof of working call speech. Normal MIC/MODE_NORMAL separately delivered 162,682 nonzero samples over 3.96 s. |
+| Same live local input/output switching | Off→RNNoise→DTLN→DF→off→DF with positive backend counters; capture max positive-read gap 40 ms and max nonblocking app read 2 ms. DF capture callback max 23.569 ms, seven deadline overruns. Playback timeline advancement is not acoustic gap certification. |
+| Real 44.1 kHz stereo A2DP software INSERT | RNNoise→DTLN→DF→RNNoise and output OFF→ON without reopening; native requested/actual/pending names plus increasing successful counters. Final sampled successful frames 1,176,588; 0 track underruns; max observed head-progress gap 53 ms. Session output peaks can include an accumulation destination, not isolated denoised-speech SNR. |
+| Automatic voice-stream software INSERT (no manually created AudioEffect) | RNNoise, 103,194 processed frames/117 calls; input/output peaks 0.00866174/0.00757894; 0 repaired samples. Track construct 104 ms, play 63 ms, 0 underruns, max observed head-progress gap 252 ms. Not gap-free Bluetooth or acoustic-call certification. |
+| Framework resource boundary | A music reservation consumed the full 512 KB effect budget; even a stock equalizer could then fail. A later Visualizer-first test also prevented Clarifae registration: its nonzero samples were raw playback only, not effect proof. The descriptor estimate was not lowered and the framework budget was not raised. Ordinary media was excluded by the separately audited device policy, not by changes to this normal installer. |
+| Owner audibility report | On 3 November the owner reported that calls, music and microphone work. **User-reported audibility; app/route unspecified.** This does not resolve every earlier local zero-valued communication test or establish cellular/modem/acoustic certification. |
+
+No new call, recording, device access or settings change was performed for this refresh. The separate UI live-routing/control-manager update is not included or claimed here. Music must remain an explicit integration opt-in; output HP/AGC are independent of microphone settings. No broad route activation is proposed.
+
+Wrapper dump engine fields are last-observed snapshots: after an adapter-off/excluded/muted read they can retain the previous `enabled`/backend values. Current gate/bypass reason and processing-counter deltas, not these cached labels, determine whether PCM was processed. The disabled-state host regression checks adapter-off/bypass reporting. This preserves the canonical bridge source instead of silently presenting a diagnostic-only follow-up as the deployed binary.
+
+## Relocated refresh gates
+
+The reproducible scripts compile this relocated experimental tree, with explicit external RNNoise/NDK paths. `engine-sanitize.sh` exercises fake-backend async/lifetime/property and float total-delivery suites under ASan/UBSan or TSan, plus a real RNNoise-only synthetic smoke under ASan/UBSan. `host-sanitize.sh` exercises the forwarding/capture lifecycle with fake stock PCM, a real RNNoise engine, explicit Android API stubs and separate fault engines. These are not Android, optional-plugin or real-route execution. Exact observed check counts are recorded with the public update comment.
+
+`build.sh` and `build-race-tests.sh` crossbuild ARM64/API26 production/isolated engines, bridge/fake-stock/fault/property helpers and current engine-owned async regressions. The obsolete wrapper-owned mode-worker fixture was replaced, not retained as a falsely representative passing test. Public dependency pins/fetches/licenses are unchanged. No model/runtime/toolchain blobs are committed, and experimental sources/artifacts stay excluded from the normal ZIP.
+
+DF remains **soft realtime**: inference still allocates and exceeds deadlines in some recorded runs (including 72.798 ms in one isolated normal-priority test). ThreadSanitizer/fake-backend passing is not DF ASan, hard-realtime, perceptual-quality, concurrency, USB/MMAP/offload, cellular or cold-boot certification. No reboot/root-persistence guarantee is made. Review and broad firmware/route testing remain prerequisites before automatic integration.

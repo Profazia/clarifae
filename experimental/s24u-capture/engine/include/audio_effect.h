@@ -56,6 +56,7 @@ typedef struct effect_descriptor_s {
 /* ----- Effect flags (subset we use) ----- */
 #define EFFECT_FLAG_TYPE_SHIFT        0
 #define EFFECT_FLAG_TYPE_PRE_PROC     (3 << EFFECT_FLAG_TYPE_SHIFT)  /* pre-processing effect */
+#define EFFECT_FLAG_TYPE_INSERT       0  /* AOSP software session insert */
 #define EFFECT_FLAG_TYPE_POST_PROC    (4 << EFFECT_FLAG_TYPE_SHIFT)
 
 #define EFFECT_FLAG_INSERT_SHIFT      3
