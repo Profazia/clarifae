@@ -24,8 +24,8 @@ extern "C" {
 #define EFFECT_API_VERSION_MAJOR(v)    ((v) >> 16)
 #define EFFECT_API_VERSION_MINOR(v)    ((v) & 0xffff)
 
-/* AudioFlinger only requires the MAJOR version (3) to match. */
-#define EFFECT_CONTROL_API_VERSION     EFFECT_MAKE_API_VERSION(3, 0)  /* 0x00030000 */
+/* Legacy engine control ABI 2.0; library ABI is independently 3.0. */
+#define EFFECT_CONTROL_API_VERSION     EFFECT_MAKE_API_VERSION(2, 0)  /* 0x00020000 */
 #define EFFECT_LIBRARY_API_VERSION     EFFECT_MAKE_API_VERSION(3, 0)  /* 0x00030000 */
 
 #define EFFECT_STRING_LEN 64
@@ -39,7 +39,7 @@ typedef struct effect_uuid_s {
     uint8_t  node[6];
 } effect_uuid_t;
 
-#define EFFECT_UUID_INITIALIZER { 0, 0, 0, 0, { 0, 0, 0, 0, 0, 0 } }
+#define EFFECT_UUID_INITIALIZER { 0xec7178ec, 0xe5e1, 0x4432, 0xa3f4, { 0x46, 0x57, 0xe6, 0x79, 0x52, 0x10 } }
 
 /* ----- Descriptor ----- */
 typedef struct effect_descriptor_s {
@@ -65,8 +65,8 @@ typedef struct effect_descriptor_s {
 
 #define EFFECT_FLAG_VOLUME_NONE       (0 << 6)
 #define EFFECT_FLAG_DEVICE_NONE       (0 << 9)
-#define EFFECT_FLAG_INPUT_DIRECT      (0 << 11)
-#define EFFECT_FLAG_OUTPUT_DIRECT     (0 << 13)
+#define EFFECT_FLAG_INPUT_DIRECT      (1 << 12)
+#define EFFECT_FLAG_OUTPUT_DIRECT     (1 << 14)
 #define EFFECT_FLAG_HW_ACC_NONE       0
 
 /* ----- Audio formats (audio_format_t, truncated to the 8-bit field) ----- */
@@ -183,7 +183,7 @@ struct effect_interface_s {
 typedef struct effect_interface_s effect_interface_t;
 
 /* ----- effect library interface ----- */
-#define AUDIO_EFFECT_LIBRARY_TAG ((('E') << 24) | (('F') << 16) | (('F') << 8) | ('A')) /* 0x45464641 */
+#define AUDIO_EFFECT_LIBRARY_TAG ((('A') << 24) | (('E') << 16) | (('L') << 8) | ('T')) /* 0x41454c54 */
 #define AUDIO_EFFECT_LIBRARY_INFO_SYM        AELI
 #define AUDIO_EFFECT_LIBRARY_INFO_SYM_AS_STR "AELI"
 
@@ -199,6 +199,45 @@ typedef struct audio_effect_library_s {
     int32_t (*get_descriptor)(const effect_uuid_t* uuid,
                               effect_descriptor_t* pDescriptor);
 } audio_effect_library_t;
+
+/* AOSP effect_param_t: value begins at the next 32-bit boundary. */
+typedef struct effect_param_s {
+    int32_t status;
+    uint32_t psize;
+    uint32_t vsize;
+    unsigned char data[];
+} effect_param_t;
+
+/* Lock the legacy library 3.0 prefix and control layouts to AOSP.
+ * Both LP64 and ILP32 builds must check their own native pointer-size ABI. */
+#if !defined(__cplusplus)
+_Static_assert(sizeof(effect_uuid_t) == 16, "UUID ABI");
+_Static_assert(sizeof(effect_descriptor_t) == 172, "descriptor ABI");
+_Static_assert(offsetof(effect_descriptor_t, name) == 44, "descriptor name ABI");
+_Static_assert(sizeof(effect_param_t) == 12, "parameter ABI");
+_Static_assert(AUDIO_EFFECT_LIBRARY_TAG == 0x41454c54, "library tag ABI");
+_Static_assert(EFFECT_CONTROL_API_VERSION == 0x20000, "control version ABI");
+_Static_assert(EFFECT_LIBRARY_API_VERSION == 0x30000, "library version ABI");
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(audio_buffer_t) == 16, "audio buffer ABI");
+_Static_assert(sizeof(buffer_provider_t) == 24, "provider ABI");
+_Static_assert(sizeof(buffer_config_t) == 56, "buffer config ABI");
+_Static_assert(offsetof(buffer_config_t, format) == 48, "format ABI");
+_Static_assert(sizeof(effect_config_t) == 112, "effect config ABI");
+_Static_assert(sizeof(effect_interface_t) == 32, "callback ABI");
+_Static_assert(sizeof(audio_effect_library_t) == 48, "library 3.0 prefix ABI");
+_Static_assert(offsetof(audio_effect_library_t, create_effect) == 24, "create ABI");
+#elif UINTPTR_MAX == UINT32_MAX
+_Static_assert(sizeof(audio_buffer_t) == 8, "audio buffer ABI");
+_Static_assert(sizeof(buffer_provider_t) == 12, "provider ABI");
+_Static_assert(sizeof(buffer_config_t) == 32, "buffer config ABI");
+_Static_assert(offsetof(buffer_config_t, format) == 28, "format ABI");
+_Static_assert(sizeof(effect_config_t) == 64, "effect config ABI");
+_Static_assert(sizeof(effect_interface_t) == 16, "callback ABI");
+_Static_assert(sizeof(audio_effect_library_t) == 28, "library 3.0 prefix ABI");
+_Static_assert(offsetof(audio_effect_library_t, create_effect) == 16, "create ABI");
+#endif
+#endif
 
 /* common return codes (errno-style negatives are also used) */
 #define EFFECT_SUCCESS 0

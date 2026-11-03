@@ -11,7 +11,7 @@
 #include <string.h>
 
 /* Single definition of the runtime log level used by log.h everywhere. */
-int clarifae_log_level = 1;
+_Atomic int clarifae_log_level = 1;
 
 static const char* const kProps[] = {
     "persist.clarifae.enabled",
@@ -66,31 +66,37 @@ void clarifae_config_load(clarifae_config_t* cfg) {
             "mic,voice_comm");
     get_str("persist.clarifae.out_targets", cfg->out_targets, (int)sizeof(cfg->out_targets),
             "music,voice_call");
-    clarifae_log_level = cfg->loglevel;
+    atomic_store_explicit(&clarifae_log_level, cfg->loglevel, memory_order_relaxed);
 }
 
-/* Sum of per-property serials; changes whenever any clarifae prop is written. */
-static uint32_t serial_sum(void) {
-    uint32_t s = 0;
+/* Public API 26 supplies a consistent serial/value pair for each property.
+ * Keep exact snapshots, not a sum/hash whose collisions can hide a change. */
+_Static_assert(NPROPS == CLARIFAE_CONFIG_KEY_COUNT, "config key count");
+_Static_assert(PROP_VALUE_MAX == CLARIFAE_CONFIG_VALUE_MAX, "property value ABI");
+
+static void read_snapshot(void* cookie, const char* name, const char* value,
+                          uint32_t serial) {
+    (void)name;
+    clarifae_config_slot_t* slot = (clarifae_config_slot_t*)cookie;
+    slot->serial = serial;
+    strncpy(slot->value, value, sizeof(slot->value) - 1);
+    slot->value[sizeof(slot->value) - 1] = '\0';
+}
+
+int clarifae_config_changed(clarifae_config_watch_t* watch) {
+    int changed = !watch->initialized;
     for (size_t i = 0; i < NPROPS; i++) {
         const prop_info* pi = __system_property_find(kProps[i]);
-        if (pi) s += __system_property_serial(pi);
+        clarifae_config_slot_t observed = { .property = pi };
+        if (pi) __system_property_read_callback(pi, read_snapshot, &observed);
+        clarifae_config_slot_t* previous = &watch->slots[i];
+        if (previous->property != observed.property ||
+            previous->serial != observed.serial ||
+            strcmp(previous->value, observed.value) != 0) {
+            *previous = observed;
+            changed = 1;
+        }
     }
-    return s;
-}
-
-int clarifae_config_changed(void) {
-    static uint32_t last = 0;
-    static int initialized = 0;
-    uint32_t cur = serial_sum();
-    if (!initialized) {
-        initialized = 1;
-        last = cur;
-        return 1; /* force an initial load */
-    }
-    if (cur != last) {
-        last = cur;
-        return 1;
-    }
-    return 0;
+    watch->initialized = 1;
+    return changed;
 }

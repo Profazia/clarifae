@@ -10,15 +10,38 @@ done
 
 jbool() { [ "$1" = "1" ] && echo true || echo false; }
 
+# CSV names must be whole tokens from the existing portable route maps.
+# Output permits an explicit empty list; capture keeps at least one source.
+validate_targets() (
+  _csv_side="$1"; _csv="$2"
+  [ "$_csv_side" = out_targets ] && [ -z "$_csv" ] && return 0
+  case "$_csv" in ''|,*|*,|*,,*) return 1 ;; esac
+  while :; do
+    _token="${_csv%%,*}"
+    case "$_csv_side:$_token" in
+      targets:mic|targets:voice_comm|targets:camcorder|targets:voice_rec) ;;
+      out_targets:music|out_targets:media|out_targets:voice_call|out_targets:calls|out_targets:ring|out_targets:alarm|out_targets:notification|out_targets:notif|out_targets:system) ;;
+      *) return 1 ;;
+    esac
+    case "$_csv" in *,*) _csv="${_csv#*,}" ;; *) return 0 ;; esac
+  done
+)
+
+uint_range() {
+  # Also reject leading zeros/signs/whitespace, which are not JSON numbers.
+  case "$1" in ''|*[!0-9]*|0[0-9]*) return 1 ;; esac
+  [ "$1" -le "$2" ] 2>/dev/null
+}
+
 validate() {
   k="$1"; v="$2"
   case "$k" in
     enabled|in_enabled|out_enabled|highpass|autogain) case "$v" in 0|1) return 0;; *) return 1;; esac ;;
     mode)     case "$v" in 1|2|3) return 0;; *) return 1;; esac ;;
     loglevel) case "$v" in 0|1|2|3) return 0;; *) return 1;; esac ;;
-    strength|out_strength|vad) { [ "$v" -ge 0 ] && [ "$v" -le 100 ]; } 2>/dev/null ;;
-    atten_db)     { [ "$v" -ge 0 ] && [ "$v" -le 60  ]; } 2>/dev/null ;;
-    targets|out_targets)  return 0 ;;
+    strength|out_strength|vad) uint_range "$v" 100 ;;
+    atten_db) uint_range "$v" 60 ;;
+    targets|out_targets) validate_targets "$k" "$v" ;;
     *) return 1 ;;
   esac
 }
@@ -36,14 +59,14 @@ have_lib() {
 cmd_set() {
   k="$1"; v="$2"
   validate "$k" "$v" || { echo "invalid: $k=$v" >&2; return 1; }
-  conf_set "$k" "$v"
-  _setp "persist.clarifae.$k" "$v"
+  conf_set "$k" "$v" || { echo "could not save $k" >&2; return 1; }
+  _setp "persist.clarifae.$k" "$v" || { echo "saved $k, but property sync failed" >&2; return 1; }
   clarifae_log "set $k=$v"
   echo "$k=$v"
 }
 
 cmd_get_json() {
-  conf_init
+  conf_init || { echo "could not initialize config" >&2; return 1; }
   printf '{'
   printf '"enabled":%s,'     "$(jbool "$(conf_get enabled)")"
   printf '"in_enabled":%s,'  "$(jbool "$(conf_get in_enabled)")"
@@ -63,7 +86,7 @@ cmd_get_json() {
 }
 
 cmd_status_json() {
-  conf_init
+  conf_init || { echo "could not initialize config" >&2; return 1; }
   lib64=0; have_lib lib64 && lib64=1
   lib32=0; have_lib lib   && lib32=1
   xml=0;   is_audio_effects_patched && xml=1
@@ -89,7 +112,7 @@ cmd_status_json() {
 }
 
 cmd_status() {
-  conf_init
+  conf_init || { echo "could not initialize config" >&2; return 1; }
   echo "Clarifae $CLARIFAE_VERSION"
   echo "  enabled : $(conf_get enabled)  (mic:$(conf_get in_enabled) playback:$(conf_get out_enabled))"
   echo "  mode    : $(conf_get mode) ($(mode_name "$(conf_get mode)"))"
@@ -105,15 +128,33 @@ cmd_status() {
     && echo "  effect  : LOADED" || echo "  effect  : not detected (reopen capture / restart-audio)"
 }
 
-cmd_apply()  { conf_init; prop_sync; echo "applied"; }
-cmd_reset()  { clarifae_defaults > "$CONFIG"; prop_sync; echo "reset to defaults"; }
+# Portable Apply only syncs settings. XML routes are generated at installation.
+cmd_apply() {
+  conf_init || { echo "could not initialize config" >&2; return 1; }
+  prop_sync || { echo "settings sync failed (possibly partial)" >&2; return 1; }
+  echo "settings synced; installed target routes unchanged (reinstall/regenerate routes to change them)"
+}
+
+cmd_reset() {
+  conf_init || { echo "could not initialize config" >&2; return 1; }
+  _reset_tmp="$CONFIG.tmp.$$"
+  if ! clarifae_defaults > "$_reset_tmp" || ! mv "$_reset_tmp" "$CONFIG"; then
+    rm -f "$_reset_tmp"
+    echo "could not reset config" >&2
+    return 1
+  fi
+  prop_sync || { echo "defaults saved, but property sync failed (possibly partial)" >&2; return 1; }
+  echo "defaults saved and settings synced; installed target routes unchanged"
+}
 
 cmd_restart_audio() {
-  command -v killall >/dev/null 2>&1 && killall audioserver 2>/dev/null
-  setprop ctl.restart audioserver 2>/dev/null
-  stop audioserver 2>/dev/null; start audioserver 2>/dev/null
-  clarifae_log "audioserver restart requested"
-  echo "audioserver restart requested"
+  conf_init || { echo "could not initialize config" >&2; return 1; }
+  prop_sync || { echo "settings sync failed; audio restart not requested" >&2; return 1; }
+  # Request once through Android init. No unconditional kill/stop/start fallbacks,
+  # no active-call protection, and no claim that accepting a request proves recovery.
+  setprop ctl.restart audioserver || { echo "audioserver restart request failed" >&2; return 1; }
+  clarifae_log "audioserver restart requested (completion not verified)"
+  echo "audioserver restart requested (completion not verified); installed target routes unchanged"
 }
 
 cmd_log() {
@@ -122,10 +163,18 @@ cmd_log() {
 }
 
 case "$1" in
-  get)           conf_init; cat "$CONFIG" ;;
+  get)           conf_init && cat "$CONFIG" ;;
   get-json)      cmd_get_json ;;
-  set)           shift; cmd_set "$1" "$2" ;;
-  set-many)      shift; rc=0; for kv in "$@"; do cmd_set "${kv%%=*}" "${kv#*=}" || rc=1; done; exit $rc ;;
+  set)           shift; [ "$#" -eq 2 ] || { echo "usage: clarifae-ctl set KEY VALUE" >&2; exit 2; }; cmd_set "$1" "$2" ;;
+  set-many)      shift; [ "$#" -gt 0 ] || { echo "set-many needs K=V arguments" >&2; exit 2; }
+                 rc=0
+                 for kv in "$@"; do
+                   case "$kv" in
+                     *=*) cmd_set "${kv%%=*}" "${kv#*=}" || rc=1 ;;
+                     *) echo "invalid assignment: $kv" >&2; rc=1 ;;
+                   esac
+                 done
+                 exit "$rc" ;;
   apply)         cmd_apply ;;
   status)        cmd_status ;;
   status-json)   cmd_status_json ;;

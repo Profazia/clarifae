@@ -22,26 +22,35 @@
 
   function exec(command, options) {
     options = options || {};
+    var requested = Number(options.timeout);
+    var seconds = isFinite(requested) && requested > 0 ? Math.max(8, Math.min(70, requested)) : 8;
+    var hostOptions = {};
+    Object.keys(options).forEach(function (key) { hostOptions[key] = options[key]; });
+    hostOptions.timeout = seconds;
     return new Promise(function (resolve) {
       if (!hasHost) { resolve(mockExec(command)); return; }
       var cb = genCb();
       var done = false;
-      window[cb] = function (errno, stdout, stderr) {
+      var timer;
+      function finish(errno, stdout, stderr, completionUnknown) {
         if (done) return;
         done = true;
+        clearTimeout(timer);
         try { delete window[cb]; } catch (e) { window[cb] = undefined; }
-        resolve({ errno: Number(errno) || 0, stdout: stdout || '', stderr: stderr || '' });
-      };
-      try {
-        window.ksu.exec(command, JSON.stringify(options), cb);
-      } catch (e) {
-        try { delete window[cb]; } catch (_) {}
-        resolve({ errno: -1, stdout: '', stderr: String(e) });
+        var code = Number(errno);
+        if ((typeof errno !== 'number' && typeof errno !== 'string') ||
+            (typeof errno === 'string' && !/^-?[0-9]+$/.test(errno)) ||
+            !isFinite(code) || Math.floor(code) !== code) code = -1;
+        resolve({ errno: code, stdout: stdout == null ? '' : String(stdout), stderr: stderr == null ? '' : String(stderr), completionUnknown: !!completionUnknown || code < 0 });
       }
-      // safety timeout so the UI never hangs forever
-      setTimeout(function () {
-        if (!done) { done = true; resolve({ errno: -2, stdout: '', stderr: 'exec timeout' }); }
-      }, 8000);
+      window[cb] = finish;
+      // Bounded UI wait; timing out does not prove the host cancelled the command.
+      timer = setTimeout(function () { finish(-2, '', 'exec timeout; command completion unknown', true); }, seconds * 1000);
+      try {
+        window.ksu.exec(command, JSON.stringify(hostOptions), cb);
+      } catch (e) {
+        finish(-1, '', String(e), true);
+      }
     });
   }
 
@@ -58,7 +67,9 @@
     if (command.indexOf('status-json') !== -1) {
       out = JSON.stringify({
         enabled: true, mode: 1, mode_name: 'RNNoise (Low latency)',
-        strength: 70, atten_db: 24, vad: 50, targets: 'mic,voice_comm',
+        in_enabled: true, out_enabled: true,
+        strength: 70, out_strength: 60, atten_db: 24, vad: 50, targets: 'mic,voice_comm',
+        out_targets: 'music,voice_call',
         highpass: true, autogain: false, loglevel: 1,
         lib32: false, lib64: true, xml_patched: true,
         model_rnnoise: true, model_dtln: false, model_df: false,
@@ -67,7 +78,9 @@
     } else if (command.indexOf('get-json') !== -1) {
       out = JSON.stringify({
         enabled: true, mode: 1, mode_name: 'RNNoise (Low latency)',
-        strength: 70, atten_db: 24, vad: 50, targets: 'mic,voice_comm',
+        in_enabled: true, out_enabled: true,
+        strength: 70, out_strength: 60, atten_db: 24, vad: 50, targets: 'mic,voice_comm',
+        out_targets: 'music,voice_call',
         highpass: true, autogain: false, loglevel: 1
       });
     } else if (command.indexOf(' log') !== -1) {

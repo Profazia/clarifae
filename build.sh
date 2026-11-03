@@ -26,11 +26,17 @@ echo ">> NDK: $NDK"
 TOOLCHAIN="$NDK/build/cmake/android.toolchain.cmake"
 [ -f "$TOOLCHAIN" ] || { echo "ERROR: toolchain not found: $TOOLCHAIN"; exit 1; }
 
-# --- ensure RNNoise is present ---
-if [ ! -f "$NATIVE/third_party/rnnoise/include/rnnoise.h" ]; then
+# --- ensure RNNoise is present; an explicit external tree is never fetched ---
+RNN="${RNNOISE_DIR:-$NATIVE/third_party/rnnoise}"
+if [ ! -f "$RNN/include/rnnoise.h" ]; then
+  if [ -n "${RNNOISE_DIR:-}" ]; then
+    echo "ERROR: RNNOISE_DIR must contain include/rnnoise.h." >&2
+    exit 1
+  fi
   echo ">> Fetching RNNoise..."
   "$HERE/scripts/fetch_deps.sh"
 fi
+RNN="$(cd "$RNN" && pwd)"
 
 ABIS="${ABIS:-arm64-v8a armeabi-v7a x86_64}"
 API="${ANDROID_API:-26}"
@@ -50,6 +56,7 @@ for ABI in $ABIS; do
         -DANDROID_ABI="$ABI" \
         -DANDROID_PLATFORM="android-$API" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DRNNOISE_DIR="$RNN" \
         "${EXTRA[@]}"
   cmake --build "$BUILD" -j "$JOBS"
 

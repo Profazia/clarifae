@@ -5,6 +5,7 @@
  */
 #ifndef CLARIFAE_CONFIG_H
 #define CLARIFAE_CONFIG_H
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,10 +31,26 @@ typedef struct clarifae_config {
  * for any that are unset/empty. Also updates the global clarifae_log_level. */
 void clarifae_config_load(clarifae_config_t* cfg);
 
-/* Cheap check (property serial compare) for "did any clarifae prop change since
- * the last call?". Returns non-zero when a reload is warranted. Safe to call
- * from the realtime process() path. */
-int clarifae_config_changed(void);
+/* Each effect owns a zero-initialized watcher. The first check requests a load;
+ * subsequent checks compare property identity, serial and value using public
+ * API 26 read_callback. Call BEFORE config_load(), including during creation
+ * and configuration: a write racing the load must remain visible next time.
+ * Individual properties are consistent; a multi-property update is not atomic. */
+#define CLARIFAE_CONFIG_KEY_COUNT 13
+#define CLARIFAE_CONFIG_VALUE_MAX 92
+
+typedef struct {
+    const void* property;
+    uint32_t serial;
+    char value[CLARIFAE_CONFIG_VALUE_MAX];
+} clarifae_config_slot_t;
+
+typedef struct {
+    clarifae_config_slot_t slots[CLARIFAE_CONFIG_KEY_COUNT];
+    int initialized;
+} clarifae_config_watch_t;
+
+int clarifae_config_changed(clarifae_config_watch_t* watch);
 
 #ifdef __cplusplus
 }
