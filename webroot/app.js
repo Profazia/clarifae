@@ -4,7 +4,16 @@
 
   var KSU = window.ClarifaeKSU;
   var $ = function (id) { return document.getElementById(id); };
-  var setTimers = {};
+  var setTimers = Object.create(null);
+  var pendingSets = Object.create(null);
+  var saveFailures = Object.create(null);
+  var commandQueue = Promise.resolve();
+  var saveQueue = Promise.resolve();
+  var pendingSaveCount = 0;
+  var actionRunning = false;
+  var mutationUncertain = false;
+  var statusRequest = null;
+  var busyControls = [];
   var refreshTimer = null;
 
   /*
@@ -18,7 +27,93 @@
     'C=/data/adb/clarifae/clarifae-ctl; ' +
     '[ -x "$C" ] || C=/data/adb/modules/clarifae/system/bin/clarifae-ctl; ' +
     '[ -x "$C" ] || C=clarifae-ctl; ';
-  function ctl(args) { return KSU.exec(CTL_RESOLVE + '"$C" ' + args); }
+  function shellQuote(value) { return "'" + String(value).replace(/'/g, "'\\''") + "'"; }
+  function ctl(args) {
+    var mutation = ['set', 'set-many', 'apply', 'reset', 'restart-audio'].indexOf(args[0]) !== -1;
+    var next = commandQueue.then(function () {
+      if (mutation && mutationUncertain) {
+        return { errno: -3, stdout: '', stderr: 'Changes blocked: an earlier command may still be running. Verify its completion and saved settings before reopening the WebUI.' };
+      }
+      return KSU.exec(CTL_RESOLVE + '"$C" ' + args.map(shellQuote).join(' '), { timeout: 65 });
+    }).catch(function (e) {
+      return { errno: -1, stdout: '', stderr: String(e && e.message || e), completionUnknown: true };
+    }).then(function (r) {
+      if (mutation && (r.completionUnknown || r.errno < 0)) lockMutations();
+      return r;
+    });
+    commandQueue = next.then(function () {});
+    return next;
+  }
+
+  // A timed-out/ambiguous mutation can still finish later in the host shell.
+  // Quarantine subsequent writes, including already queued ones; a readback alone
+  // cannot prove that old shell has exited. Recovery needs operator reconciliation.
+  function lockMutations() {
+    mutationUncertain = true;
+    var warning = $('command-warning');
+    warning.textContent = 'Command completion unknown. Further changes are blocked: an earlier command may still run. Verify host command completion and saved settings before reopening the WebUI; reopening does not cancel it.';
+    warning.classList.remove('hidden');
+    document.querySelectorAll('input, .chip, .mode-card, #btn-apply, #btn-restart, #btn-reset').forEach(function (el) { el.disabled = true; });
+  }
+  function errorText(r) { return r.stderr || r.stdout || ('exit ' + r.errno); }
+
+  function flushPending() {
+    Object.keys(pendingSets).forEach(function (key) {
+      var pending = pendingSets[key];
+      setKey(key, pending.value, pending.label);
+    });
+    return saveQueue;
+  }
+
+  function setBusy(busy) {
+    if (busy) {
+      busyControls = [];
+      document.querySelectorAll('input, .chip, .mode-card, #btn-apply, #btn-restart, #btn-reset').forEach(function (el) {
+        busyControls.push({ el: el, disabled: el.disabled });
+        el.disabled = true;
+      });
+    } else {
+      busyControls.forEach(function (item) { item.el.disabled = mutationUncertain || item.disabled; });
+      busyControls = [];
+    }
+  }
+
+  function runAction(action) {
+    if (actionRunning) return Promise.resolve(false);
+    actionRunning = true;
+    setBusy(true);
+    toast(action === 'apply' ? 'Syncing settings…' : action === 'reset' ? 'Resetting settings…' : 'Requesting audio restart…');
+    return flushPending().then(function () {
+      var failed = Object.keys(saveFailures);
+      if (action !== 'reset' && failed.length) {
+        toast('Not applied: failed saves (' + failed.join(', ') + '). Retry those settings first.');
+        return false;
+      }
+      return ctl([action]).then(function (r) {
+        if (r.errno !== 0) {
+          toast((action === 'restart-audio' ? 'Restart request failed: ' : 'Not applied: ') + errorText(r));
+          return false;
+        }
+        if (action === 'reset') {
+          saveFailures = Object.create(null);
+          toast('Defaults saved and settings synced; installed routes unchanged');
+          return loadAll().then(function () { return true; });
+        }
+        toast(action === 'apply'
+          ? 'Settings synced; installed routes unchanged'
+          : 'Audio restart requested (not verified); installed routes unchanged');
+        return true;
+      });
+    }).catch(function (e) {
+      toast('Action failed: ' + String(e && e.message || e));
+      return false;
+    }).then(function (ok) {
+      actionRunning = false;
+      setBusy(false);
+      if (ok && action !== 'reset') refreshStatus();
+      return ok;
+    });
+  }
 
   function toast(msg) { KSU.toast(msg); showToast(msg); }
   function showToast(msg) {
@@ -33,18 +128,35 @@
     try { return JSON.parse(stdout); } catch (e) { return null; }
   }
 
-  /* push a single setting and surface failures */
+  /* Serialize writes, and retain failures until that key is saved successfully.
+   * Merely draining the queue must never turn a failed save into a successful Apply. */
   function setKey(key, value, label) {
-    return ctl('set ' + key + ' ' + value).then(function (r) {
-      if (r.errno !== 0) toast('Failed: ' + key + ' (' + (r.stderr || r.errno) + ')');
-      else if (label) toast(label);
+    clearTimeout(setTimers[key]);
+    delete setTimers[key];
+    delete pendingSets[key];
+    pendingSaveCount++;
+    var saved = saveQueue.then(function () { return ctl(['set', key, value]); }).then(function (r) {
+      pendingSaveCount--;
+      if (r.errno !== 0) {
+        saveFailures[key] = true;
+        toast('Failed: ' + key + ' (' + errorText(r) + ')');
+      } else {
+        delete saveFailures[key];
+        if (label) toast(label);
+      }
       return r;
     });
+    saveQueue = saved.then(function () {});
+    return saved;
   }
 
   function debouncedSet(key, value, label) {
     clearTimeout(setTimers[key]);
-    setTimers[key] = setTimeout(function () { setKey(key, value, label); }, 280);
+    pendingSets[key] = { value: value, label: label };
+    setTimers[key] = setTimeout(function () {
+      var pending = pendingSets[key];
+      if (pending) setKey(key, pending.value, pending.label);
+    }, 280);
   }
 
   /* ---------- rendering ---------- */
@@ -101,8 +213,8 @@
   function renderStatus(s) {
     lastStatus = s;
     $('master-sub').textContent = s.enabled
-      ? 'Active — ' + (s.mode_name || 'cleaning your microphone') + '.'
-      : 'Paused. Toggle on to clean your microphone.';
+      ? 'Enabled in settings — ' + (s.mode_name || 'check attachment and PCM processing separately') + '.'
+      : 'Disabled in settings.';
     if (s.version) $('version').textContent = 'Clarifae ' + s.version;
 
     document.querySelectorAll('.mode-status').forEach(function (el) {
@@ -122,7 +234,7 @@
       ['Enabled', bool(s.enabled)],
       ['Mic cleanup', bool(s.in_enabled)],
       ['Playback cleanup', bool(s.out_enabled)],
-      ['Effect loaded', triState(s.effect_loaded)],
+      ['Effect detected (heuristic)', triState(s.effect_loaded)],
       ['audio_effects patched', bool(s.xml_patched)],
       ['Library (64-bit)', bool(s.lib64)],
       ['Library (32-bit)', s.lib32 ? yes('yes') : neutral('—')],
@@ -141,22 +253,32 @@
   function warn(t) { return '<span class="v warn">' + t + '</span>'; }
   function neutral(t) { return '<span class="v">' + t + '</span>'; }
   function bool(b) { return b ? yes('yes') : no('no'); }
-  function triState(b) { return b ? yes('loaded') : warn('not detected'); }
+  function triState(b) { return b ? yes('detected') : warn('not detected'); }
 
   /* ---------- data flow ---------- */
+  // A slow/absent bridge must not accumulate one queued poll every five seconds.
+  function readStatus() {
+    if (!statusRequest) {
+      statusRequest = ctl(['status-json']).then(function (r) { statusRequest = null; return r; });
+    }
+    return statusRequest;
+  }
+
   function loadAll() {
-    return ctl('status-json').then(function (r) {
-      var s = parse(r.stdout);
-      if (!s) { toast('Could not read status'); return; }
+    return readStatus().then(function (r) {
+      var s = r.errno === 0 ? parse(r.stdout) : null;
+      if (!s) { toast('Could not read status: ' + (r.errno !== 0 ? errorText(r) : 'invalid JSON')); return; }
       renderControls(s);
       renderStatus(s);
     });
   }
 
-  function refreshStatus() {
-    ctl('status-json').then(function (r) {
-      var s = parse(r.stdout);
+  function refreshStatus(reportError) {
+    if (reportError !== true && (actionRunning || pendingSaveCount || Object.keys(pendingSets).length)) return Promise.resolve();
+    return readStatus().then(function (r) {
+      var s = r.errno === 0 ? parse(r.stdout) : null;
       if (s) renderStatus(s);
+      else if (reportError === true) toast('Could not read status: ' + (r.errno !== 0 ? errorText(r) : 'invalid JSON'));
     });
   }
 
@@ -200,7 +322,7 @@
         var sel = [];
         document.querySelectorAll('#chips-in .chip.active').forEach(function (c) { sel.push(c.dataset.target); });
         if (sel.length === 0) { chip.classList.add('active'); sel.push(chip.dataset.target); toast('Keep at least one source'); }
-        setKey('targets', sel.join(','), 'Capture sources updated (re-flash to fully apply)');
+        setKey('targets', sel.join(','), 'Capture sources saved; reinstall/regenerate routes to change installed targets');
       });
     });
 
@@ -210,28 +332,31 @@
         chip.classList.toggle('active');
         var sel = [];
         document.querySelectorAll('#chips-out .chip.active').forEach(function (c) { sel.push(c.dataset.otarget); });
-        setKey('out_targets', sel.join(','), 'Playback streams updated (re-flash to fully apply)');
+        setKey('out_targets', sel.join(','), 'Playback streams saved; reinstall/regenerate routes to change installed targets');
       });
     });
 
     $('btn-apply').addEventListener('click', function () {
-      ctl('apply').then(function () { toast('Applied'); refreshStatus(); });
+      runAction('apply');
     });
     $('btn-restart').addEventListener('click', function () {
-      if (typeof confirm === 'function' && !confirm('Restart audioserver? Active recordings/calls will glitch briefly.')) return;
-      toast('Restarting audio…');
-      ctl('restart-audio').then(function () { setTimeout(refreshStatus, 1500); });
+      if (typeof confirm !== 'function' || !confirm('Restart audioserver? Active recordings/calls will glitch briefly. No active-call protection is provided.')) return;
+      runAction('restart-audio');
     });
     $('btn-log').addEventListener('click', function () {
-      ctl('log').then(function (r) { $('log-content').textContent = r.stdout || r.stderr || '(empty)'; $('log-modal').classList.remove('hidden'); });
+      ctl(['log']).then(function (r) {
+        if (r.errno !== 0) toast('Could not read log: ' + errorText(r));
+        $('log-content').textContent = (r.errno !== 0 ? 'Log command failed: ' + errorText(r) + '\n' : '') + (r.stdout || '(empty)');
+        $('log-modal').classList.remove('hidden');
+      });
     });
     $('log-close').addEventListener('click', function () { $('log-modal').classList.add('hidden'); });
     $('log-modal').addEventListener('click', function (e) { if (e.target === this) this.classList.add('hidden'); });
     $('btn-reset').addEventListener('click', function () {
       if (typeof confirm === 'function' && !confirm('Reset all Clarifae settings to defaults?')) return;
-      ctl('reset').then(function () { toast('Reset to defaults'); loadAll(); });
+      runAction('reset');
     });
-    $('btn-refresh').addEventListener('click', refreshStatus);
+    $('btn-refresh').addEventListener('click', function () { refreshStatus(true); });
   }
 
   /* ---------- init ---------- */

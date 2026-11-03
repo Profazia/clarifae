@@ -43,29 +43,57 @@ clarifae_log() {
 }
 
 conf_init() {
-  mkdir -p "$CLARIFAE_DIR" 2>/dev/null
+  mkdir -p "$CLARIFAE_DIR" 2>/dev/null || return 1
   [ -f "$CONFIG" ] || clarifae_defaults > "$CONFIG"
 }
 
-# conf_get KEY -> value (falls back to default)
-conf_get() {
-  _k="$1"; _v=""
-  [ -f "$CONFIG" ] && _v=$(grep "^$_k=" "$CONFIG" 2>/dev/null | tail -n1 | cut -d= -f2-)
-  [ -z "$_v" ] && _v=$(clarifae_defaults | grep "^$_k=" | cut -d= -f2-)
-  printf '%s' "$_v"
+conf_key_valid() {
+  case "$1" in
+    enabled|in_enabled|out_enabled|mode|strength|out_strength|atten_db|vad|targets|out_targets|highpass|autogain|loglevel) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
-# conf_set KEY VALUE
-conf_set() {
-  _k="$1"; _v="$2"
-  conf_init
-  if grep -q "^$_k=" "$CONFIG" 2>/dev/null; then
-    _tmp="$CONFIG.tmp.$$"
-    sed "s|^$_k=.*|$_k=$_v|" "$CONFIG" > "$_tmp" && mv "$_tmp" "$CONFIG"
-  else
-    echo "$_k=$_v" >> "$CONFIG"
+# conf_get KEY -> value. Only a missing key falls back; an explicit empty stays empty.
+conf_get() (
+  [ "$#" -eq 1 ] || return 1
+  conf_key_valid "$1" || return 1
+  _get_key="$1"
+  if [ -f "$CONFIG" ]; then
+    _get_line=$(grep "^$_get_key=" "$CONFIG")
+    _get_rc=$?
+    case "$_get_rc" in
+      0) _get_line=$(printf '%s\n' "$_get_line" | tail -n1)
+         printf '%s' "${_get_line#*=}"; return 0 ;;
+      1) ;; # absent, not empty
+      *) return 1 ;;
+    esac
+  elif [ -e "$CONFIG" ]; then
+    return 1
   fi
-}
+  _get_line=$(clarifae_defaults | grep "^$_get_key=") || return 1
+  printf '%s' "${_get_line#*=}"
+)
+
+# conf_set KEY VALUE. Do not interpolate values into a sed/awk program.
+# Config values occupy one line; reject line injection even for direct helper users.
+conf_set() (
+  [ "$#" -eq 2 ] || return 1
+  conf_key_valid "$1" || return 1
+  _set_key="$1"; _set_value="$2"
+  _set_cr=$(printf '\r')
+  case "$_set_value" in *'
+'*|*"$_set_cr"*) return 1 ;; esac
+  conf_init || return 1
+  _set_tmp="$CONFIG.tmp.$$"
+  trap 'rm -f "$_set_tmp"' 0
+  CLARIFAE_CONF_KEY="$_set_key" CLARIFAE_CONF_VALUE="$_set_value" awk '
+    BEGIN { key=ENVIRON["CLARIFAE_CONF_KEY"]; value=ENVIRON["CLARIFAE_CONF_VALUE"]; found=0 }
+    index($0, key "=")==1 { if (!found) print key "=" value; found=1; next }
+    { print }
+    END { if (!found) print key "=" value }
+  ' "$CONFIG" > "$_set_tmp" && mv "$_set_tmp" "$CONFIG"
+)
 
 # write a single property (persisted)
 _setp() {
@@ -76,12 +104,18 @@ _setp() {
   fi
 }
 
-# push every config key to its persist.clarifae.* property
+# Push every config key; any failed read/write makes the whole sync unsuccessful.
 prop_sync() {
-  for _k in $CLARIFAE_KEYS; do
-    _setp "persist.clarifae.$_k" "$(conf_get "$_k")"
+  _sync_rc=0
+  for _sync_key in $CLARIFAE_KEYS; do
+    if _sync_value=$(conf_get "$_sync_key"); then
+      _setp "persist.clarifae.$_sync_key" "$_sync_value" || _sync_rc=1
+    else
+      _sync_rc=1
+    fi
   done
-  clarifae_log "props synced from config"
+  clarifae_log "props synced from config (rc=$_sync_rc)"
+  return "$_sync_rc"
 }
 
 mode_name() {

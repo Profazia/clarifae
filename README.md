@@ -142,14 +142,76 @@ clarifae-ctl get                 # print config.conf
 clarifae-ctl get-json            # settings as JSON
 clarifae-ctl set KEY VALUE       # validate + write config + sync property
 clarifae-ctl set-many K=V K=V…   # batch set
-clarifae-ctl apply               # push all config -> persist.clarifae.*
+clarifae-ctl apply               # sync settings only; installed XML routes unchanged
 clarifae-ctl status              # human-readable engine status
 clarifae-ctl status-json         # status as JSON (used by the WebUI)
-clarifae-ctl restart-audio       # respawn audioserver to reload effects
+clarifae-ctl restart-audio       # sync settings, request audioserver restart (interrupts audio)
 clarifae-ctl reset               # restore defaults
 clarifae-ctl log                 # tail ctl log + logcat -s Clarifae
 clarifae-ctl version
 ```
+
+### Settings saves, Apply and Restart
+
+The WebUI quotes every shell argument (including an empty value), serializes
+writes, and flushes debounced slider saves **before** Apply or Restart. A failed
+save blocks either action until that setting is successfully saved again, or a
+successful Reset restores defaults. CLI config-write, property-write and partial
+property-sync failures return nonzero and are shown instead of a success toast.
+Batch `set-many` and property sync are not transactions: an error can leave some
+settings saved/synced; independent CLI processes are not serialized by the WebUI.
+
+**Apply only syncs saved settings to `persist.clarifae.*`.** This portable module
+has no live XML-route manager or capture HAL adapter. Changing the **installed
+target list** still requires reinstalling/regenerating the route overlay and
+activating it using the platform's normal procedure (typically re-flash + reboot).
+Neither Apply nor Restart regenerates routes. An explicit
+`clarifae-ctl set out_targets ''` remains empty in config, JSON and property sync;
+it does not by itself remove already installed XML entries. Only a missing key
+falls back to the unchanged default. Capture target lists must remain nonempty.
+CSV tokens must match the existing per-side route maps (legacy output aliases
+`media`, `calls`, `notif` are also accepted); malformed/unknown tokens,
+whitespace and line injection are rejected.
+
+Restart preserves the interruption warning: active recordings/calls **can glitch**,
+and there is **no active-call protection**. After successful settings sync, the CLI
+makes one checked `setprop ctl.restart audioserver` request, with no unconditional
+kill/stop/start fallbacks. A zero return proves only that the request was accepted,
+not that audio recovered, routes changed, or live PCM was processed. The WebUI says
+“requested (not verified)”, never “restarted”. Status detection is heuristic;
+registration, attachment and PCM processing still need independent verification.
+
+UI commands wait up to 65 seconds; the bridge clamps caller timeouts to 8–70 seconds
+and cleans callbacks/timers on completion, exception or timeout. Slow status polls
+are coalesced and automatic polling pauses during saves/actions, so polls cannot
+build a backlog ahead of saves. A mutation timeout,
+ambiguous bridge exception or invalid completion code means **completion unknown**,
+not host cancellation. The UI quarantines **all further mutations**, including
+already queued saves, same-key retries, Reset and Restart, for that page session.
+A persistent warning remains; read-only status/log queries do not unlock writes.
+Verify that the original host command has actually finished and reconcile saved
+settings before reopening the WebUI. Reopening alone does not cancel a command;
+there is no automatic safe recovery in this portable bridge. Known nonzero command
+exits remain retryable. Desktop preview remains a mock, not device evidence.
+
+### Host-only control regression tests
+
+~~~sh
+node --test tests/test_ui.cjs
+sh tests/test_control.sh
+# Optional second POSIX shell implementation:
+TEST_SH=/path/to/dash sh tests/test_control.sh
+~~~
+
+The JavaScript suite uses a mocked DOM/bridge and a local POSIX shell only for
+argument roundtrips. The POSIX fixture isolates config, property and service
+commands under ignored `build/`; it exercises empty/missing values, key/CSV
+validation, config/property/sync errors and honest restart requests without device
+access. No npm install, root access, hardware recording or route change is needed.
+Run the existing ASan/UBSan native suites separately with `tests/run-host.sh`
+and an external `RNNOISE_DIR` as described in
+[legacy effect testing](docs/LEGACY_EFFECT_TESTING.md). Native/backend behavior,
+installer defaults, SELinux policy, model selection and music routing are unchanged.
 
 ## Limitations & caveats
 
